@@ -3,8 +3,8 @@ import fs from 'fs';
 
 async function resize() {
   try {
-    const srcPath = 'public/file_000000007f70720ba79580f6a379715e(1).png';
-    console.log(`Loading original upload: ${srcPath}...`);
+    const srcPath = 'public/KakaoTalk_20260528_220542424.png';
+    console.log(`Loading uploaded icon from: ${srcPath}...`);
     
     // Read raw buffer from disk to detect and clean trailing garbage
     let imageBuffer = fs.readFileSync(srcPath);
@@ -19,11 +19,13 @@ async function resize() {
       }
     }
 
+    // Read the image using Jimp from clean buffer
     const original = await Jimp.read(imageBuffer);
+    console.log(`Loaded original image. Size: ${original.width}x${original.height}`);
 
-    console.log('Saving original as public/icon.png...');
-    // Overwrite/write the correct source icon.png
-    await original.write('public/icon.png');
+    console.log('Saving original of resized size 512x512 as public/icon.png...');
+    const iconBase = original.clone().resize({ w: 512, h: 512 });
+    await iconBase.write('public/icon.png');
     console.log('Created public/icon.png');
     
     console.log('Scaling to 192x192px...');
@@ -43,3 +45,5 @@ async function resize() {
 }
 
 resize();
+
+

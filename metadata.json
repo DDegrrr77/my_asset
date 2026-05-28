@@ -2,5 +2,5 @@
   "name": "Snow Ball",
   "description": "Personal wealth and cash flow tracking Progressive Web App using LocalStorage.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
