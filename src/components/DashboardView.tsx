@@ -86,7 +86,7 @@ export default function DashboardView() {
       <div className="flex flex-col items-center justify-center p-4 mt-8 md:mt-16 mb-20">
         <div className="bg-white p-8 md:p-10 rounded-3xl shadow-lg border border-gray-100 max-w-2xl w-full">
           <div className="flex justify-center mb-6">
-            <img src="/icon.png?v=5" alt="Snow Ball Logo" className="w-16 h-16 rounded-2xl shadow-sm" />
+            <img src="/icon.png?v=6" alt="Snow Ball Logo" className="w-16 h-16 rounded-2xl shadow-sm" />
           </div>
           <h2 className="text-2xl font-black text-gray-900 mb-2 tracking-tight text-center">환영합니다!</h2>
           <p className="text-gray-500 mb-8 text-sm font-medium text-center">Snow Ball을 통해 자산을 효과적으로 관리해보세요.<br/>첫 스냅샷을 기록하기 전에 아래 사용 방법을 확인해주세요.</p>

@@ -1,10 +1,10 @@
-const CACHE_NAME = 'snow-ball-cache-v5';
+const CACHE_NAME = 'snow-ball-cache-v6';
 const PRE_CACHE_ASSETS = [
   '/',
   '/index.html',
-  '/icon.png?v=5',
-  '/icon-192.png?v=5',
-  '/icon-512.png?v=5',
+  '/icon.png?v=6',
+  '/icon-192.png?v=6',
+  '/icon-512.png?v=6',
   '/manifest.json'
 ];
 
