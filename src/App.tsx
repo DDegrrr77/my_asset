@@ -58,7 +58,7 @@ function AppContent() {
         className="fixed top-0 left-0 right-0 bg-white border-b border-gray-200 px-4 py-3 md:px-8 md:py-4 flex justify-between items-center z-50 shadow-sm"
       >
         <div className="flex items-center gap-3 md:gap-4">
-          <img src="/icon.png" alt="Snow Ball Logo" className="w-10 h-10 md:w-12 md:h-12 rounded-2xl shadow-sm object-cover" />
+          <img src="/icon.png?v=5" alt="Snow Ball Logo" className="w-10 h-10 md:w-12 md:h-12 rounded-2xl shadow-sm object-cover" />
           <div className="flex flex-col justify-center">
             <p className="text-[9px] md:text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-0.5">Asset Manager</p>
             <h1 className="text-xl md:text-2xl font-black text-gray-900 tracking-tighter flex items-center">
