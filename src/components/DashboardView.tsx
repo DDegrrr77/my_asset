@@ -29,6 +29,52 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
+const CustomXAxisTick = (props: any) => {
+  const { x, y, payload, index, data, isDetailMode } = props;
+  const value = payload.value;
+  if (!value) return null;
+  const parts = value.split('-');
+  const yy = parts[0];
+  const mm = parts[1];
+  const monthNum = parseInt(mm, 10).toString();
+
+  let isYearChange = false;
+  if (index === 0) {
+    isYearChange = true;
+  } else if (data && data[index - 1]) {
+    const prevValue = data[index - 1].name;
+    const prevYy = prevValue.split('-')[0];
+    if (prevYy !== yy) {
+      isYearChange = true;
+    }
+  } else if (mm === '01') {
+    isYearChange = true;
+  }
+
+  if (!isDetailMode) {
+    if (isYearChange) {
+      return (
+        <g transform={`translate(${x},${y})`}>
+          <text x={0} y={0} dy={12} textAnchor="middle" fill="#9CA3AF" fontSize={10} fontWeight="bold">
+            {`'${yy}`}
+          </text>
+        </g>
+      );
+    }
+    return null;
+  }
+
+  const labelStr = isYearChange ? `'${yy}.${monthNum}` : monthNum;
+
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text x={0} y={0} dy={12} textAnchor="middle" fill="#9CA3AF" fontSize={11} fontWeight="bold">
+        {labelStr}
+      </text>
+    </g>
+  );
+};
+
 export default function DashboardView() {
   const { data } = useData();
   const { monthlyRecords, settings } = data;
@@ -39,6 +85,15 @@ export default function DashboardView() {
   };
 
   const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+
+  React.useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isDetailMode = !!fullscreenChart || windowWidth >= 768;
 
   const openFullscreen = async (chartId: string) => {
     setFullscreenChart(chartId);
@@ -86,7 +141,7 @@ export default function DashboardView() {
       <div className="flex flex-col items-center justify-center p-4 mt-8 md:mt-16 mb-20">
         <div className="bg-white p-8 md:p-10 rounded-3xl shadow-lg border border-gray-100 max-w-2xl w-full">
           <div className="flex justify-center mb-6">
-            <img src="/icon.png?v=6" alt="Snow Ball Logo" className="w-16 h-16 rounded-2xl shadow-sm" />
+            <img src="/icon.svg?v=6" alt="Snow Ball Logo" className="w-16 h-16 rounded-2xl shadow-sm" />
           </div>
           <h2 className="text-2xl font-black text-gray-900 mb-2 tracking-tight text-center">환영합니다!</h2>
           <p className="text-gray-500 mb-8 text-sm font-medium text-center">Snow Ball을 통해 자산을 효과적으로 관리해보세요.<br/>첫 스냅샷을 기록하기 전에 아래 사용 방법을 확인해주세요.</p>
@@ -162,9 +217,9 @@ export default function DashboardView() {
           <div className="flex-1 p-4 w-full h-full pb-safe">
             <ResponsiveContainer width="100%" height="100%">
               {fullscreenChart === 'asset' ? (
-                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 0 }} style={{ outline: 'none' }}>
+                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 20 }} style={{ outline: 'none' }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                   <YAxis domain={['dataMin - 1000000', 'dataMax + 1000000']} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} tickFormatter={formatCompactCurrency} width={45} />
                   <Tooltip content={<CustomTooltip />} cursor={{fill: '#f9fafb'}} />
                   <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'black', paddingBottom: '20px' }} />
@@ -172,9 +227,9 @@ export default function DashboardView() {
                   <Line type="monotone" dataKey="평가액" stroke="#111827" strokeWidth={4} dot={{ r: 0 }} activeDot={{ r: 6, fill: '#111827' }} name="평가액" />
                 </ComposedChart>
               ) : fullscreenChart === 'trend' ? (
-                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 0 }} style={{ outline: 'none' }}>
+                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 20 }} style={{ outline: 'none' }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                   <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} tickFormatter={formatCompactCurrency} width={45} />
                   <Tooltip content={<CustomTooltip />} cursor={{fill: '#f9fafb'}} />
                   <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'black', paddingBottom: '20px' }} />
@@ -184,13 +239,15 @@ export default function DashboardView() {
                   })}
                 </ComposedChart>
               ) : (
-                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 0 }} style={{ outline: 'none' }}>
+                <ComposedChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 20 }} style={{ outline: 'none' }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                   <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF', fontWeight: 'bold' }} tickFormatter={formatCompactCurrency} width={45} />
                   <Tooltip content={<CustomTooltip />} cursor={{fill: '#f9fafb'}} />
                   <Bar dataKey="배당금" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={40} name="배당금">
-                    <LabelList dataKey="배당금" position="top" formatter={(value: number) => value > 0 ? formatKoreanCurrency(value) : ''} style={{ fontSize: '10px', fill: '#10B981', fontWeight: 'bold' }} />
+                    {isDetailMode && (
+                      <LabelList dataKey="배당금" position="top" formatter={(value: number) => value > 0 ? formatKoreanCurrency(value) : ''} style={{ fontSize: '10px', fill: '#10B981', fontWeight: 'bold' }} />
+                    )}
                   </Bar>
                 </ComposedChart>
               )}
@@ -254,11 +311,11 @@ export default function DashboardView() {
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart 
                 data={chartData} 
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
                 style={{ outline: 'none' }}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                 <YAxis 
                   domain={['dataMin - 1000000', 'dataMax + 1000000']} 
                   axisLine={false} 
@@ -288,11 +345,11 @@ export default function DashboardView() {
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart 
                 data={chartData} 
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
                 style={{ outline: 'none' }}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                 <YAxis 
                   axisLine={false} 
                   tickLine={false} 
@@ -325,11 +382,11 @@ export default function DashboardView() {
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart 
                 data={chartData} 
-                margin={{ top: 20, right: 10, left: 0, bottom: 0 }}
+                margin={{ top: 20, right: 10, left: 0, bottom: 20 }}
                 style={{ outline: 'none' }}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#9CA3AF', fontWeight: 'bold' }} dy={10} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={<CustomXAxisTick data={chartData} isDetailMode={isDetailMode} />} interval={0} />
                 <YAxis 
                   axisLine={false} 
                   tickLine={false} 
@@ -339,12 +396,14 @@ export default function DashboardView() {
                 />
                 <Tooltip content={<CustomTooltip />} cursor={{fill: '#f9fafb'}} />
                 <Bar dataKey="배당금" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={30} name="배당금">
-                  <LabelList 
-                    dataKey="배당금" 
-                    position="top" 
-                    formatter={(value: number) => value > 0 ? formatKoreanCurrency(value) : ''} 
-                    style={{ fontSize: '9px', fill: '#10B981', fontWeight: 'bold' }} 
-                  />
+                  {isDetailMode && (
+                    <LabelList 
+                      dataKey="배당금" 
+                      position="top" 
+                      formatter={(value: number) => value > 0 ? formatKoreanCurrency(value) : ''} 
+                      style={{ fontSize: '9px', fill: '#10B981', fontWeight: 'bold' }} 
+                    />
+                  )}
                 </Bar>
               </ComposedChart>
             </ResponsiveContainer>

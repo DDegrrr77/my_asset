@@ -186,20 +186,34 @@ async function resize() {
       original = await generateBeautifulFallbackIcon();
     }
 
-    console.log('Writing public/icon.png (512x512px)...');
-    const iconBase = original.clone().resize({ w: 512, h: 512 });
-    await iconBase.write('public/icon.png');
-    console.log('Created public/icon.png');
+    // Delete existing generated icons to prevent carrying over dead weight
+    const filesToDelete = ['public/icon.png', 'public/icon-192.png', 'public/icon-512.png'];
+    for (const f of filesToDelete) {
+      if (fs.existsSync(f)) {
+        try {
+          fs.unlinkSync(f);
+          console.log(`Deleted deprecated PNG file: ${f}`);
+        } catch (e: any) {
+          console.warn(`Could not delete ${f}:`, e.message);
+        }
+      }
+    }
+
+    console.log('Generating optimized 512x512px PNG buffer in-memory for SVG embedding...');
+    const iconResized = original.clone().resize({ w: 512, h: 512 });
+    const pngBuffer = await iconResized.getBuffer('image/png');
     
-    console.log('Writing public/icon-192.png (192x192px)...');
-    const resized1 = original.clone().resize({ w: 192, h: 192 });
-    await resized1.write('public/icon-192.png');
-    console.log('Created public/icon-192.png');
-    
-    console.log('Writing public/icon-512.png (512x512px)...');
-    const resized2 = original.clone().resize({ w: 512, h: 512 });
-    await resized2.write('public/icon-512.png');
-    console.log('Created public/icon-512.png');
+    console.log('Writing public/icon.svg (Pure Vector wrapper around optimized custom PNG visual)...');
+    try {
+      const base64Png = pngBuffer.toString('base64');
+      const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <image href="data:image/png;base64,${base64Png}" width="512" height="512" x="0" y="0"/>
+</svg>`;
+      fs.writeFileSync('public/icon.svg', svgContent);
+      console.log('Created public/icon.svg successfully');
+    } catch (svgErr: any) {
+      console.error('Failed to write public/icon.svg:', svgErr.message);
+    }
     
     console.log('Successfully completed icon set synchronization!');
   } catch (error: any) {

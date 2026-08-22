@@ -38,7 +38,18 @@ export default function InputView() {
   // Local state for the form
   const [records, setRecords] = useState<Record<string, FormRecord>>({});
   const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
+  const [expandedHoldings, setExpandedHoldings] = useState<Set<string>>(new Set());
   const [selectedCloneMonth, setSelectedCloneMonth] = useState('');
+
+  const toggleHoldingExpand = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedHoldings(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const cloneDataFromMonth = () => {
     if (!selectedCloneMonth) return;
@@ -352,6 +363,23 @@ export default function InputView() {
     });
   };
 
+  const moveHoldingInAccount = (accountId: string, holdingIndex: number, direction: 'up' | 'down') => {
+    setRecords(prev => {
+      const accRec = prev[accountId];
+      const holdings = [...accRec.holdings];
+      
+      if (direction === 'up' && holdingIndex > 0) {
+        [holdings[holdingIndex - 1], holdings[holdingIndex]] = [holdings[holdingIndex], holdings[holdingIndex - 1]];
+      } else if (direction === 'down' && holdingIndex < holdings.length - 1) {
+        [holdings[holdingIndex + 1], holdings[holdingIndex]] = [holdings[holdingIndex], holdings[holdingIndex + 1]];
+      } else {
+        return prev;
+      }
+      
+      return { ...prev, [accountId]: { ...accRec, holdings } };
+    });
+  };
+
   const displayFormat = (val: number | string) => {
     if (val === '-') return '-';
     if (val === 0 || val === '0') return '';
@@ -560,128 +588,105 @@ export default function InputView() {
 
                 {/* Holdings - Responsive Layout */}
                 <div className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm">
-                  {/* Desktop Table View */}
-                  <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full text-[11px] text-left">
-                      <thead>
-                        <tr className="bg-gray-50/50 border-b border-gray-50 text-[9px] font-black text-gray-400 uppercase tracking-[0.1em]">
-                          <th className="py-3 px-4">종목명</th>
-                          <th className="py-3 px-2 text-right">수량</th>
-                          <th className="py-3 px-2 text-right">평단가</th>
-                          <th className="py-3 px-2 text-right">현재가</th>
-                          <th className="py-3 px-2 text-right">배당금</th>
-                          <th className="py-3 px-4 text-center">관리</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-50">
-                        {accRec.holdings.map((h, hIdx) => {
-                          const priceTab = 1000 + aIdx * 100 + hIdx;
-                          const divTab = 2000 + aIdx * 100 + hIdx;
-                          return (
-                          <tr key={h.id} className="hover:bg-gray-50/50 transition-colors">
-                            <td className="py-3 px-4 min-w-[120px]">
-                              <input type="text" value={h.name} onChange={e => handleHoldingChange(acc.id, h.id, 'name', e.target.value)} placeholder="종목명" className="w-full bg-transparent font-bold text-gray-800 focus:outline-none" />
-                            </td>
-                            <td className="py-3 px-2">
-                              <input type="text" inputMode="decimal" value={h.quantity || ''} onChange={e => handleHoldingChange(acc.id, h.id, 'quantity', e.target.value)} placeholder="0" className="w-full bg-transparent text-right font-mono font-bold focus:outline-none" />
-                            </td>
-                            <td className="py-3 px-2">
-                              <input type="text" inputMode="decimal" value={h.avgPrice || ''} onChange={e => handleHoldingChange(acc.id, h.id, 'avgPrice', e.target.value)} placeholder="0" className="w-full bg-transparent text-right font-mono font-bold focus:outline-none" />
-                            </td>
-                            <td className="py-3 px-2">
-                              <input type="text" inputMode="decimal" tabIndex={priceTab} data-focus-type="price" onKeyDown={e => handleInputKeyDown(e, 'price')} value={h.price || ''} onChange={e => handleHoldingChange(acc.id, h.id, 'price', e.target.value)} placeholder="0" className="w-full bg-transparent text-right font-mono font-bold text-blue-600 focus:outline-none" />
-                            </td>
-                            <td className="py-3 px-2">
-                              <input type="text" inputMode="decimal" tabIndex={divTab} data-focus-type="dividend" onKeyDown={e => handleInputKeyDown(e, 'dividend')} value={h.dividend || ''} onChange={e => handleHoldingChange(acc.id, h.id, 'dividend', e.target.value)} placeholder="0" className="w-full bg-transparent text-right font-mono font-bold text-green-600 focus:outline-none" />
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <button onClick={() => removeHoldingRow(acc.id, h.id)} className="p-1.5 text-gray-300 hover:text-red-500 transition-colors">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                              </button>
-                            </td>
-                          </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Mobile List View (2-Line Compressed Layout) */}
-                  <div className="md:hidden divide-y divide-gray-100">
+                  {/* Collapsible Accordion List View (Used across all screen sizes) */}
+                  <div className="divide-y divide-gray-100">
                     {accRec.holdings.map((h, hIdx) => {
                       const priceTabM = 1000 + aIdx * 100 + hIdx;
                       const divTabM = 2000 + aIdx * 100 + hIdx;
+                      const isExpanded = expandedHoldings.has(h.id);
+                      const qty = parseFloat(String(h.quantity)) || 0;
+                      const price = parseFloat(String(h.price)) || 0;
+                      const valuation = qty * price;
+
                       return (
-                      <div key={h.id} className="p-4 space-y-3">
-                        {/* Line 1: Asset Name & Current Price */}
-                        <div className="flex justify-between items-center">
-                          <input 
-                            type="text" 
-                            value={h.name} 
-                            onChange={e => handleHoldingChange(acc.id, h.id, 'name', e.target.value)} 
-                            placeholder="종목명" 
-                            className="bg-transparent font-black text-gray-900 text-sm focus:outline-none w-1/2" 
-                          />
-                          <div className="relative w-1/3">
+                      <div key={h.id} className="cursor-pointer bg-white" onClick={() => toggleHoldingExpand(h.id)}>
+                        {/* Compact View */}
+                        <div className="p-4 flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0 flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
                             <input 
                               type="text" 
-                              inputMode="decimal" 
-                              tabIndex={priceTabM}
-                              data-focus-type="price"
-                              onKeyDown={e => handleInputKeyDown(e, 'price')}
-                              value={h.price || ''} 
-                              onChange={e => handleHoldingChange(acc.id, h.id, 'price', e.target.value)} 
-                              placeholder="가격" 
-                              className="w-full bg-transparent text-right font-mono font-black text-blue-600 focus:outline-none pr-4" 
+                              value={h.name} 
+                              onChange={e => handleHoldingChange(acc.id, h.id, 'name', e.target.value)} 
+                              placeholder="종목명" 
+                              className="bg-transparent font-black text-gray-900 text-[15px] focus:outline-none w-full"
                             />
-                            <span className="absolute right-0 top-1 text-[8px] font-black text-blue-400">원</span>
+                            <div className="flex items-center text-gray-500 font-bold text-[12px] gap-0">
+                              <input 
+                                type="text" 
+                                inputMode="decimal"
+                                tabIndex={priceTabM}
+                                data-focus-type="price"
+                                onKeyDown={e => handleInputKeyDown(e, 'price')}
+                                value={displayFormat(h.price)} 
+                                onChange={e => handleHoldingChange(acc.id, h.id, 'price', e.target.value)} 
+                                placeholder="0" 
+                                className="bg-transparent focus:outline-none font-mono w-[64px]"
+                              />
+                              <span className="shrink-0 -ml-1">원</span>
+                              <span className="text-gray-300 mx-2 shrink-0">·</span>
+                              <input 
+                                type="text" 
+                                inputMode="decimal" 
+                                value={displayFormat(h.quantity)} 
+                                onChange={e => handleHoldingChange(acc.id, h.id, 'quantity', e.target.value)} 
+                                placeholder="0" 
+                                className="bg-transparent focus:outline-none font-mono w-[40px] text-right"
+                              />
+                              <span className="shrink-0 ml-1">주</span>
+                            </div>
+                          </div>
+                          
+                          <div className="flex flex-col items-end shrink-0 pl-2">
+                            <div className="font-mono font-black text-blue-600 text-[14px]">{valuation ? displayFormat(valuation) : '0'}원</div>
+                            <div className="text-gray-300 mt-1 cursor-pointer p-1 -mr-1 transition-transform duration-300" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                              <svg className={`w-4 h-4 ${isExpanded ? 'text-blue-500' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7 7" /></svg>
+                            </div>
                           </div>
                         </div>
-                        {/* Line 2: Qty, Avg Cost / Dividend, Delete */}
-                        <div className="flex justify-between items-center text-[10px]">
-                          <div className="flex items-center gap-2 text-gray-400 font-bold">
-                            <input 
-                              type="text" 
-                              inputMode="decimal" 
-                              value={h.quantity || ''} 
-                              onChange={e => handleHoldingChange(acc.id, h.id, 'quantity', e.target.value)} 
-                              placeholder="수량" 
-                              className="w-12 bg-transparent focus:outline-none font-mono" 
-                            />
-                            <span>·</span>
-                            <input 
-                              type="text" 
-                              inputMode="decimal" 
-                              value={h.avgPrice || ''} 
-                              onChange={e => handleHoldingChange(acc.id, h.id, 'avgPrice', e.target.value)} 
-                              placeholder="평단" 
-                              className="w-16 bg-transparent focus:outline-none font-mono" 
-                            />
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="flex items-center gap-1.5 bg-green-50 px-2 py-1 rounded-md">
-                              <span className="text-green-600 font-black">배당</span>
+
+                        {/* Expanded Detail View */}
+                        <div className={`overflow-hidden transition-all duration-300 ease-out bg-gray-50/50 ${isExpanded ? 'max-h-[120px] opacity-100 border-t border-gray-100' : 'max-h-0 opacity-0'}`} onClick={(e) => e.stopPropagation()}>
+                          <div className="p-3 px-4 flex items-center justify-between">
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                              <span className="hidden min-[769px]:inline text-[11px] font-black text-gray-400 shrink-0">평단가:</span>
+                              <span className="inline min-[769px]:hidden text-[11px] font-black text-gray-400 shrink-0">평:</span>
+                              <input 
+                                type="text" 
+                                inputMode="decimal" 
+                                value={displayFormat(h.avgPrice)} 
+                                onChange={e => handleHoldingChange(acc.id, h.id, 'avgPrice', e.target.value)} 
+                                placeholder="0" 
+                                className="flex-1 min-w-0 w-full bg-transparent focus:outline-none font-mono text-[13px] font-bold text-gray-700" 
+                              />
+                              <span className="text-[11px] font-bold text-gray-400 -ml-1">원</span>
+                            </div>
+                            
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0 px-2 border-l border-gray-200/60 mx-2">
+                              <span className="hidden min-[769px]:inline text-[11px] font-black text-green-600 shrink-0">배당금:</span>
+                              <span className="inline min-[769px]:hidden text-[11px] font-black text-green-600 shrink-0">배:</span>
                               <input 
                                 type="text" 
                                 inputMode="decimal" 
                                 tabIndex={divTabM}
                                 data-focus-type="dividend"
                                 onKeyDown={e => handleInputKeyDown(e, 'dividend')}
-                                value={h.dividend || ''} 
+                                value={displayFormat(h.dividend)} 
                                 onChange={e => handleHoldingChange(acc.id, h.id, 'dividend', e.target.value)} 
                                 placeholder="0" 
-                                className="w-12 bg-transparent text-right font-mono font-black text-green-700 focus:outline-none" 
+                                className="flex-1 min-w-0 w-full bg-transparent focus:outline-none font-mono text-[13px] font-black text-green-700" 
                               />
+                              <span className="text-[11px] font-bold text-green-600 -ml-1">원</span>
                             </div>
-                            <button 
-                              onClick={() => removeHoldingRow(acc.id, h.id)} 
-                              className="p-3 -m-3 text-gray-300 hover:text-red-500 transition-colors"
-                              aria-label="Delete asset"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </button>
+
+                            <div className="hidden min-[769px]:flex shrink-0 items-center pl-2 ml-auto border-l border-gray-200/60">
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); removeHoldingRow(acc.id, h.id); }} 
+                                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-red-500 bg-white hover:bg-red-50 rounded-xl shadow-[0_2px_8px_-4px_rgba(0,0,0,0.05)] border border-gray-100 transition-all text-sm"
+                                aria-label="Delete asset"
+                              >
+                                🗑️
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>

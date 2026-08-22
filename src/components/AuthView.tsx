@@ -37,7 +37,7 @@ export default function AuthView({ isSetup, onComplete }: { isSetup: boolean, on
     <div className="flex flex-col h-[100dvh] bg-gray-50 text-gray-900 items-center justify-center p-4">
       <div className="w-full max-w-sm bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex flex-col">
         <div className="mb-10 text-center flex flex-col items-center">
-          <img src="/icon.png?v=6" alt="Snow Ball Logo" className="w-16 h-16 rounded-3xl shadow-sm mb-4" />
+          <img src="/icon.svg?v=6" alt="Snow Ball Logo" className="w-16 h-16 rounded-3xl shadow-sm mb-4" />
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Asset Manager</p>
           <h1 className="text-3xl font-light text-gray-900 tracking-tight">Snow Ball</h1>
         </div>

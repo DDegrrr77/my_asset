@@ -1,0 +1,28 @@
+{
+  "id": "/",
+  "short_name": "Snow Ball",
+  "name": "Snow Ball - 자산 관리",
+  "description": "Personal wealth and cash flow tracking Progressive Web App using LocalStorage.",
+  "categories": ["finance", "utilities"],
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "window-controls-overlay", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "/icon.svg?v=6",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg?v=6",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "maskable"
+    }
+  ]
+}
