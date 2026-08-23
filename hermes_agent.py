@@ -67,7 +67,6 @@ def fetch_gist_data() -> tuple[dict, str]:
     res = requests.get(url, headers=HEADERS)
     if res.status_code == 200:
         files = res.json().get("files", {})
-        # GIST_FILENAME 우선 확인, 없으면 첫 번째 json 파일 선택
         target_file = files.get(GIST_FILENAME)
         actual_name = GIST_FILENAME
         if not target_file:
@@ -102,39 +101,27 @@ def run_hermes_update():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 헤르메스 에이전트 자산 평가 업데이트 시작...")
     
     app_data, filename = fetch_gist_data()
-    print(f"📂 대상 파일명: {filename}")
-    print(f"🔍 JSON 최상위 키 목록: {list(app_data.keys())}")
-
     usd_rate = get_usd_exchange_rate()
     print(f"💵 현재 원/달러 기준 환율: {usd_rate:,.2f}원")
 
-    # 월별 데이터 키 자동 탐색 (monthlyRecords, records, history 등)
-    records = None
-    for key in ["monthlyRecords", "records", "history", "data"]:
-        if key in app_data and isinstance(app_data[key], list):
-            records = app_data[key]
-            print(f"📌 데이터 리스트 키 매칭 성공: '{key}' (총 {len(records)}개 기록)")
-            break
-
-    if not records:
-        print("⚠️ 자산 기록 배열을 찾지 못했습니다. JSON 구조를 확인하세요.")
-        return
-
-    latest_record = records[-1]
-    print(f"📊 대상 월별 기록: {latest_record.get('month') or latest_record.get('date') or '최신'}")
+    # 1. 메인 accounts 데이터 탐색
+    accounts = app_data.get("accounts", [])
+    print(f"📂 등록된 계좌 수: {len(accounts)}개")
 
     total_net_worth = 0
-    accounts = latest_record.get("accounts") or latest_record.get("categories") or []
 
     for account in accounts:
-        account_total = 0
+        account_name = account.get("name", "이름없음")
         holdings = account.get("holdings") or account.get("items") or []
+        account_stock_total = 0
 
         for item in holdings:
+            name = item.get("name", "종목")
             code = item.get("code") or item.get("ticker") or item.get("symbol")
-            market = item.get("market", "KRX").upper()
+            market = str(item.get("market", "KRX")).upper()
             qty = float(item.get("quantity") or item.get("shares") or item.get("qty") or 0)
 
+            # 가격 갱신
             if code and qty > 0:
                 if market in ["US", "USA", "OVERSEAS", "NASDAQ", "NYSE"]:
                     price_usd = get_us_stock_price(code)
@@ -143,30 +130,37 @@ def run_hermes_update():
                         item["currentPrice"] = int(price_usd * usd_rate)
                         item["totalValue"] = int(qty * price_usd * usd_rate)
                         item["valuation"] = item["totalValue"]
-                        print(f"  - [해외] {item.get('name', code)}({code}): ${price_usd:,.2f} x {qty} -> {item['totalValue']:,}원")
+                        print(f"  - [{account_name}] (해외) {name}({code}): ${price_usd:,.2f} x {qty} -> {item['totalValue']:,}원")
                 else:
                     price_krw = get_krx_stock_price(code)
                     if price_krw > 0:
                         item["currentPrice"] = price_krw
                         item["totalValue"] = int(qty * price_krw)
                         item["valuation"] = item["totalValue"]
-                        print(f"  - [국내] {item.get('name', code)}({code}): {price_krw:,}원 x {qty} -> {item['totalValue']:,}원")
-            
-            account_total += int(item.get("totalValue") or item.get("valuation") or item.get("value") or 0)
+                        print(f"  - [{account_name}] (국내) {name}({code}): {price_krw:,}원 x {qty} -> {item['totalValue']:,}원")
 
-        # 현금 및 계좌 총합
+            item_val = int(item.get("totalValue") or item.get("valuation") or item.get("value") or 0)
+            account_stock_total += item_val
+
+        # 계좌 현금 및 총 평가액 계산
         cash = int(account.get("cash") or 0)
-        account_total += cash
+        account_total = account_stock_total + cash
         account["totalValuation"] = account_total
         account["balance"] = account_total
         total_net_worth += account_total
 
-    latest_record["totalNetWorth"] = total_net_worth
-    latest_record["netWorth"] = total_net_worth
-    latest_record["lastUpdated"] = datetime.now().isoformat()
     print(f"💰 재계산된 총 순자산: {total_net_worth:,}원")
 
-    # 갱신 데이터 저장
+    # 2. monthlyRecords의 가장 최근 레코드 동기화 (있는 경우)
+    monthly_records = app_data.get("monthlyRecords", [])
+    if monthly_records:
+        latest_record = monthly_records[-1]
+        latest_record["totalNetWorth"] = total_net_worth
+        latest_record["netWorth"] = total_net_worth
+        latest_record["lastUpdated"] = datetime.now().isoformat()
+        print(f"📊 최신 월별 히스토리({latest_record.get('month', '최신')}) 순자산 갱신 완료")
+
+    # 3. Gist 저장
     update_gist_data(app_data, filename)
 
 if __name__ == "__main__":
