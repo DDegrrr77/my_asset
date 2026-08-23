@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { DataProvider, useData } from './store/DataContext';
-import { LayoutDashboard, PlusCircle, Wallet, Settings, User, LogOut, Key } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Wallet, Settings, User, LogOut, Key, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import DashboardView from './components/DashboardView';
 import InputView from './components/InputView';
@@ -15,11 +15,20 @@ import AuthView from './components/AuthView';
 import HelpGuide from './components/HelpGuide';
 
 function AppContent() {
-  const { data, storageSource, updateSettings } = useData();
+  const { data, storageSource, syncing, refreshFromGist, updateSettings } = useData();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showHeader, setShowHeader] = useState(true);
   const [showNav, setShowNav] = useState(true);
   const [lastScrollTop, setLastScrollTop] = useState(0);
+  const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null);
+  
+  const handleManualSync = async () => {
+    const res = await refreshFromGist();
+    setRefreshFeedback(res.message);
+    setTimeout(() => {
+      setRefreshFeedback(null);
+    }, 2500);
+  };
   
   // Profile settings & guide modal states
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -122,14 +131,39 @@ function AppContent() {
           </div>
         </div>
         
-        <button 
-          onClick={() => setIsProfileModalOpen(true)}
-          className="bg-white border border-gray-200 text-gray-500 hover:text-gray-900 rounded-full p-2.5 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors flex items-center justify-center"
-          title="사용자 정보 및 설정"
-        >
-          <User className="w-5 h-5 flex-shrink-0" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={handleManualSync}
+            disabled={syncing}
+            className="bg-white border border-gray-200 text-gray-500 hover:text-blue-600 active:scale-95 disabled:opacity-50 rounded-full p-2.5 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all flex items-center justify-center"
+            title="데이터 최신 동기화(새로고침)"
+          >
+            <RefreshCw className={`w-4 h-4 md:w-5 md:h-5 flex-shrink-0 ${syncing ? 'animate-spin text-blue-600' : ''}`} />
+          </button>
+          
+          <button 
+            onClick={() => setIsProfileModalOpen(true)}
+            className="bg-white border border-gray-200 text-gray-500 hover:text-gray-900 rounded-full p-2.5 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors flex items-center justify-center"
+            title="사용자 정보 및 설정"
+          >
+            <User className="w-5 h-5 flex-shrink-0" />
+          </button>
+        </div>
       </motion.header>
+
+      {/* Toast Feedback */}
+      <AnimatePresence>
+        {refreshFeedback && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-16 md:top-20 left-1/2 -translate-x-1/2 z-[100] bg-gray-900/90 text-white text-xs font-bold px-4 py-2 rounded-full shadow-lg backdrop-blur-sm flex items-center gap-2 border border-gray-700"
+          >
+            <span>✓</span> {refreshFeedback}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {isProfileModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm">

@@ -6,10 +6,10 @@ import { format } from 'date-fns';
 import { v4 as uuidv4 } from 'uuid';
 import { Account, Holding, RecordDetail, MonthlyRecord, AppData } from '../types';
 import { APP_VERSION } from '../constants';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, RefreshCw } from 'lucide-react';
 
 export default function SettingsView() {
-  const { data, storageSource, githubToken, gistId, updateGistConfig, testConnection, updateSettings, exportData, importData, setAppData } = useData();
+  const { data, storageSource, githubToken, gistId, syncing, refreshFromGist, updateGistConfig, testConnection, updateSettings, exportData, importData, setAppData } = useData();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
@@ -18,6 +18,7 @@ export default function SettingsView() {
   const [showToken, setShowToken] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     setTokenInput(githubToken);
@@ -28,6 +29,10 @@ export default function SettingsView() {
   const [goalInput, setGoalInput] = useState(() => 
     new Intl.NumberFormat('ko-KR').format(data.settings.retirementGoal)
   );
+
+  useEffect(() => {
+    setGoalInput(new Intl.NumberFormat('ko-KR').format(data.settings.retirementGoal));
+  }, [data.settings.retirementGoal]);
 
   const handleGoalSave = () => {
     const val = parseInt(goalInput.replace(/[^0-9]/g, ''), 10);
@@ -440,7 +445,7 @@ export default function SettingsView() {
         <div className="flex flex-col sm:flex-row gap-3">
           <button 
             onClick={handleTestAndSave}
-            disabled={testing}
+            disabled={testing || syncing || refreshing}
             className="flex-1 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] disabled:opacity-50 text-white py-3.5 rounded-xl text-xs font-black tracking-wider transition-all shadow-md shadow-blue-600/10 flex items-center justify-center gap-2"
           >
             {testing ? (
@@ -452,6 +457,23 @@ export default function SettingsView() {
               '연결 테스트 및 동기화 활성화'
             )}
           </button>
+
+          {(githubToken || gistId) && (
+            <button 
+              onClick={async () => {
+                setRefreshing(true);
+                const res = await refreshFromGist();
+                setTestResult(res);
+                setRefreshing(false);
+              }}
+              disabled={testing || syncing || refreshing}
+              className="px-5 bg-gray-900 hover:bg-gray-800 active:scale-[0.98] disabled:opacity-50 text-white py-3.5 rounded-xl text-xs font-black tracking-wider transition-all flex items-center justify-center gap-2"
+              title="Gist로부터 최신 데이터를 즉시 다시 불러옵니다"
+            >
+              <RefreshCw size={14} className={refreshing || syncing ? 'animate-spin text-blue-400' : ''} />
+              최신 데이터 새로고침
+            </button>
+          )}
 
           {(githubToken || gistId) && (
             <button 

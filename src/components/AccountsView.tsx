@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useData } from '../store/DataContext';
 import { formatCurrency } from '../lib/utils';
 import { AccountType } from '../types';
@@ -19,6 +19,15 @@ export default function AccountsView() {
   const [newLimit, setNewLimit] = useState('');
 
   const [editState, setEditState] = useState<{id: string, name: string, type: AccountType, annualLimit: string} | null>(null);
+
+  useEffect(() => {
+    if (editState) {
+      const exists = data.accounts.some(a => a.id === editState.id);
+      if (!exists) {
+        setEditState(null);
+      }
+    }
+  }, [data.accounts]);
   
   const handleAddAccount = () => {
     if (!newName.trim()) return;

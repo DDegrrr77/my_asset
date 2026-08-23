@@ -96,6 +96,7 @@ interface DataContextType {
   storageSource: 'Gist' | 'LocalStorage';
   githubToken: string;
   gistId: string;
+  syncing: boolean;
   saveMonthlyRecord: (record: MonthlyRecord) => void;
   deleteMonthlyRecord: (id: string) => void;
   updateSettings: (settings: UserSettings) => void;
@@ -108,6 +109,7 @@ interface DataContextType {
   setAppData: (data: AppData) => void;
   updateGistConfig: (token: string, id: string) => void;
   testConnection: (token?: string, id?: string) => Promise<{ success: boolean; message: string }>;
+  refreshFromGist: () => Promise<{ success: boolean; message: string }>;
 }
 
 const DataContext = createContext<DataContextType | null>(null);
@@ -146,7 +148,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // GitHub Gist loading helper
+  // GitHub Gist loading helper (with Cache-Busting)
   const loadFromGist = async (token: string, id: string): Promise<AppData | null> => {
     if (!token || !id) {
       console.log('GitHub Gist credentials are not set. Falling back to LocalStorage.');
@@ -154,13 +156,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const response = await fetch(`https://api.github.com/gists/${id}`, {
+      const response = await fetch(`https://api.github.com/gists/${id}?_t=${Date.now()}`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28'
+          'X-GitHub-Api-Version': '2022-11-28',
+          'If-None-Match': '', // ETag 캐시 무효화
         },
+        cache: 'no-store'
       });
 
       if (!response.ok) {
@@ -188,6 +192,44 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       console.error('Failed to load from Gist, falling back to LocalStorage:', error);
       return null;
+    }
+  };
+
+  // Manual Refresh / Sync helper from Gist or LocalStorage
+  const refreshFromGist = async (): Promise<{ success: boolean; message: string }> => {
+    if (!githubToken || !gistId) {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored) as AppData;
+          runMigration(parsed);
+          setData(parsed);
+        }
+        return { success: true, message: '로컬 데이터가 새로고침되었습니다.' };
+      } catch (e: any) {
+        return { success: false, message: '로컬 데이터 불러오기 실패' };
+      }
+    }
+
+    setSyncing(true);
+    try {
+      const loadedData = await loadFromGist(githubToken, gistId);
+      if (loadedData) {
+        if (!loadedData.settings) {
+          loadedData.settings = defaultSettings;
+        }
+        runMigration(loadedData);
+        setData(loadedData);
+        setStorageSource('Gist');
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
+        return { success: true, message: '최신 GitHub Gist 데이터와 성공적으로 동기화되었습니다.' };
+      } else {
+        return { success: false, message: 'Gist 데이터 로드에 실패했습니다. 자격 증명 또는 네트워크 상태를 확인해 주세요.' };
+      }
+    } catch (err: any) {
+      return { success: false, message: `동기화 중 오류 발생: ${err.message || err}` };
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -240,13 +282,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const response = await fetch(`https://api.github.com/gists/${activeId}`, {
+      const response = await fetch(`https://api.github.com/gists/${activeId}?_t=${Date.now()}`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${activeToken}`,
           'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28'
+          'X-GitHub-Api-Version': '2022-11-28',
+          'If-None-Match': '',
         },
+        cache: 'no-store'
       });
 
       if (response.status === 401) {
@@ -483,7 +527,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   if (!loaded) return null; // Or skeleton
 
   return (
-    <DataContext.Provider value={{ data, storageSource, githubToken, gistId, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData, updateGistConfig, testConnection }}>
+    <DataContext.Provider value={{ data, storageSource, githubToken, gistId, syncing, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData, updateGistConfig, testConnection, refreshFromGist }}>
       {children}
       {syncing && (
         <div className="fixed inset-0 bg-gray-950/20 backdrop-blur-sm flex flex-col items-center justify-center z-[9999]">
