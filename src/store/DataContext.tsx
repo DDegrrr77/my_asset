@@ -2,6 +2,10 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AppData, Account, MonthlyRecord, UserSettings, Holding } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
+const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || "";
+const GIST_ID = import.meta.env.VITE_GIST_ID || "";
+const GIST_FILENAME = "wealthtrack-data.json";
+
 const STORAGE_KEY = 'wealthtrack_data_v1';
 
 const defaultSettings: UserSettings = {
@@ -108,50 +112,160 @@ const DataContext = createContext<DataContextType | null>(null);
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [data, setData] = useState<AppData>(defaultData);
   const [loaded, setLoaded] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
+  // Helper migration function
+  const runMigration = (parsedData: AppData) => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsedData = JSON.parse(stored) as AppData;
-        
-        // Ensure settings exist
-        if (!parsedData.settings) {
-          parsedData.settings = defaultSettings;
-        }
-
-        // Migration: move '현금' holdings to cashBalance
-        try {
-          if (parsedData.monthlyRecords) {
-            parsedData.monthlyRecords.forEach(month => {
-              month.records.forEach(record => {
-                if (record.cashBalance === undefined) {
-                  const cashHolding = record.holdings?.find?.(h => h?.name?.trim?.() === '현금');
-                  if (cashHolding) {
-                    record.cashBalance = (cashHolding.quantity || 0) * (cashHolding.price || 0);
-                    record.holdings = record.holdings.filter(h => h?.name?.trim?.() !== '현금');
-                  } else {
-                    record.cashBalance = 0;
-                  }
-                }
-                if (!record.holdings) record.holdings = [];
-              });
-            });
-          }
-        } catch (migErr) {
-          console.error("Migration error", migErr);
-        }
-        
-        setData(parsedData);
-      } else {
-        // Init with defaults
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+      if (parsedData.monthlyRecords) {
+        parsedData.monthlyRecords.forEach(month => {
+          month.records.forEach(record => {
+            if (record.cashBalance === undefined) {
+              const cashHolding = record.holdings?.find?.(h => h?.name?.trim?.() === '현금');
+              if (cashHolding) {
+                record.cashBalance = (cashHolding.quantity || 0) * (cashHolding.price || 0);
+                record.holdings = record.holdings.filter(h => h?.name?.trim?.() !== '현금');
+              } else {
+                record.cashBalance = 0;
+              }
+            }
+            if (!record.holdings) record.holdings = [];
+          });
+        });
       }
-    } catch (e) {
-      console.error('Failed to load data', e);
+    } catch (migErr) {
+      console.error("Migration error", migErr);
     }
-    setLoaded(true);
+  };
+
+  // GitHub Gist loading helper
+  const loadFromGist = async (): Promise<AppData | null> => {
+    if (!GITHUB_TOKEN || !GIST_ID) {
+      console.log('GitHub Gist credentials are not set. Falling back to LocalStorage.');
+      return null;
+    }
+
+    try {
+      const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gist load failed with status: ${response.status}`);
+      }
+
+      const gistData = await response.json();
+      const file = gistData.files && gistData.files[GIST_FILENAME];
+      if (file && file.content) {
+        const parsed = JSON.parse(file.content) as AppData;
+        if (parsed && parsed.accounts && parsed.monthlyRecords) {
+          console.log('Successfully synchronized from GitHub Gist!');
+          return parsed;
+        }
+      }
+      throw new Error('Gist file not found or empty.');
+    } catch (error) {
+      console.error('Failed to load from Gist, falling back to LocalStorage:', error);
+      return null;
+    }
+  };
+
+  // GitHub Gist saving helper
+  const saveToGist = async (newData: AppData) => {
+    if (!GITHUB_TOKEN || !GIST_ID) {
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json',
+        },
+        body: JSON.stringify({
+          description: 'WealthTrack Application Data Sync',
+          files: {
+            [GIST_FILENAME]: {
+              content: JSON.stringify(newData, null, 2),
+            },
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Gist save failed with status: ${response.status}`);
+      }
+      console.log('Successfully saved to GitHub Gist cloud storage!');
+    } catch (error) {
+      console.error('Failed to save to Gist, data remains cached in LocalStorage:', error);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Initialize and load data on app startup
+  useEffect(() => {
+    const initializeData = async () => {
+      setSyncing(true);
+      let loadedData: AppData | null = null;
+
+      if (GITHUB_TOKEN && GIST_ID) {
+        loadedData = await loadFromGist();
+      }
+
+      if (loadedData) {
+        // Ensure settings exist
+        if (!loadedData.settings) {
+          loadedData.settings = defaultSettings;
+        }
+        runMigration(loadedData);
+        setData(loadedData);
+        // Sync local storage as fallback
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
+      } else {
+        // Fallback to local storage
+        try {
+          const stored = localStorage.getItem(STORAGE_KEY);
+          if (stored) {
+            const parsedData = JSON.parse(stored) as AppData;
+            if (!parsedData.settings) {
+              parsedData.settings = defaultSettings;
+            }
+            runMigration(parsedData);
+            setData(parsedData);
+          } else {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+            setData(defaultData);
+          }
+        } catch (e) {
+          console.error('Failed to load local storage data fallback:', e);
+        }
+      }
+      setLoaded(true);
+      setSyncing(false);
+    };
+
+    initializeData();
   }, []);
+
+  // Debounced auto-sync to GitHub Gist when data changes
+  useEffect(() => {
+    if (!loaded) return;
+    if (!GITHUB_TOKEN || !GIST_ID) return;
+
+    const timer = setTimeout(() => {
+      saveToGist(data);
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [data, loaded]);
 
   const persist = (newData: AppData) => {
     setData(newData);
@@ -272,6 +386,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <DataContext.Provider value={{ data, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData }}>
       {children}
+      {syncing && (
+        <div className="fixed inset-0 bg-gray-950/20 backdrop-blur-sm flex flex-col items-center justify-center z-[9999]">
+          <div className="bg-white px-8 py-6 rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.08)] border border-gray-100 flex flex-col items-center gap-4 text-center max-w-xs animate-pulse">
+            <div className="w-10 h-10 border-[3.5px] border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
+            <div>
+              <p className="text-[14px] font-black text-gray-800">클라우드 동기화 중</p>
+              <p className="text-[11px] font-semibold text-gray-400 mt-1">Gist API를 통해 자산 정보를 실시간 업로드/다운로드하고 있습니다.</p>
+            </div>
+          </div>
+        </div>
+      )}
     </DataContext.Provider>
   );
 };
