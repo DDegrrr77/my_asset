@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { useData } from '../store/DataContext';
 import { formatCurrency } from '../lib/utils';
@@ -6,11 +6,23 @@ import { format } from 'date-fns';
 import { v4 as uuidv4 } from 'uuid';
 import { Account, Holding, RecordDetail, MonthlyRecord, AppData } from '../types';
 import { APP_VERSION } from '../constants';
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function SettingsView() {
-  const { data, storageSource, updateSettings, exportData, importData, setAppData } = useData();
+  const { data, storageSource, githubToken, gistId, updateGistConfig, testConnection, updateSettings, exportData, importData, setAppData } = useData();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
+
+  const [tokenInput, setTokenInput] = useState(githubToken);
+  const [gistIdInput, setGistIdInput] = useState(gistId);
+  const [showToken, setShowToken] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    setTokenInput(githubToken);
+    setGistIdInput(gistId);
+  }, [githubToken, gistId]);
 
   
   const [goalInput, setGoalInput] = useState(() => 
@@ -331,29 +343,125 @@ export default function SettingsView() {
     reader.readAsArrayBuffer(file);
   };
 
+  const handleTestAndSave = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testConnection(tokenInput, gistIdInput);
+      setTestResult(res);
+      if (res.success) {
+        updateGistConfig(tokenInput, gistIdInput);
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: e.message || '요청 도중 알 수 없는 에러가 발생했습니다.' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleDisconnect = () => {
+    if (window.confirm('GitHub Gist 클라우드 연동을 해제하고 오프라인 로컬 전용 모드로 전환하시겠습니까?')) {
+      setTokenInput('');
+      setGistIdInput('');
+      updateGistConfig('', '');
+      setTestResult({ success: true, message: '성공적으로 연동이 해제되었으며 로컬 오프라인 모드로 전환되었습니다.' });
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col">
-        <h3 className="text-sm font-bold text-gray-700 uppercase tracking-widest mb-4">데이터 저장 장치 상태</h3>
-        <div className="p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between border gap-3 transition-all duration-300 bg-gray-50/50 border-gray-100">
-          <div className="flex flex-col">
-            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1.5">현재 데이터 동기화 소스</span>
-            <span className="text-sm font-bold text-gray-800">
-              {storageSource === 'Gist' ? 'GitHub Gist (클라우드)' : 'LocalStorage (로컬 기기)'}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 self-start sm:self-center">
-            <div className={`w-2 h-2 rounded-full ${storageSource === 'Gist' ? 'bg-green-500 animate-pulse' : 'bg-orange-400'}`} />
-            <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg ${storageSource === 'Gist' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-orange-50 text-orange-700 border border-orange-100'}`}>
-              {storageSource === 'Gist' ? 'Online Sync' : 'Local Offline'}
+      <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col gap-6">
+        <div className="flex justify-between items-center border-b border-gray-50 pb-4">
+          <h3 className="text-sm font-black text-gray-800 uppercase tracking-widest">클라우드 데이터 동기화 (GitHub Gist)</h3>
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${storageSource === 'Gist' ? 'bg-green-500 animate-pulse' : 'bg-orange-400'}`} />
+            <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${storageSource === 'Gist' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-orange-50 text-orange-700 border border-orange-100'}`}>
+              {storageSource === 'Gist' ? 'Cloud Sync' : 'Local Mode'}
             </span>
           </div>
         </div>
-        <p className="text-[11px] text-gray-400 mt-3.5 leading-relaxed">
-          {storageSource === 'Gist' 
-            ? 'GitHub Gist API와의 실시간 무중단 동기화가 정상 작동 중입니다. 모든 입력은 디바운싱 필터를 거쳐 클라우드에 자동 백그라운드 업로드되어 Hermes Python 에이전트와 완벽히 동기화됩니다.'
-            : '토큰 정보가 설정되지 않았거나 오프라인 상태입니다. 로컬 브라우저 내의 안전한 격리된 저장소(LocalStorage)를 사용하여 자산 정보를 독립적으로 기록하고 보존합니다.'}
-        </p>
+
+        <div className="p-4 rounded-2xl flex flex-col border bg-gray-50/50 border-gray-100">
+          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1.5">현재 데이터 동기화 상태</span>
+          <span className="text-xs font-bold text-gray-700">
+            {storageSource === 'Gist' 
+              ? 'GitHub Gist 클라우드 저장소와 안전하게 연동 중입니다. 모든 입력값은 백그라운드에서 실시간 동기화됩니다.'
+              : '현재 오프라인 로컬 저장소 모드입니다. 데이터는 브라우저 내부(LocalStorage)에 보관되며, 아래 자격 증명을 등록하여 클라우드 백업을 활성화할 수 있습니다.'}
+          </span>
+        </div>
+
+        {/* Input Fields */}
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest">GitHub Personal Access Token</label>
+            <div className="relative">
+              <input 
+                type={showToken ? 'text' : 'password'}
+                value={tokenInput}
+                onChange={e => setTokenInput(e.target.value)}
+                placeholder="ghp_로 시작하는 토큰을 입력하세요"
+                className="w-full bg-gray-50/50 border border-gray-200 focus:bg-white focus:border-blue-500 rounded-xl pl-4 pr-12 py-3 text-sm font-mono text-gray-800 outline-none transition-all"
+              />
+              <button 
+                type="button"
+                onClick={() => setShowToken(!showToken)}
+                className="absolute right-3.5 top-3 text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-400">Gist 읽기/쓰기 권한(gist 스코프)이 부여된 토큰이 필요합니다.</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest">Gist ID</label>
+            <input 
+              type="text"
+              value={gistIdInput}
+              onChange={e => setGistIdInput(e.target.value)}
+              placeholder="32자리 Gist 식별 번호를 입력하세요"
+              className="w-full bg-gray-50/50 border border-gray-200 focus:bg-white focus:border-blue-500 rounded-xl px-4 py-3 text-sm font-mono text-gray-800 outline-none transition-all"
+            />
+          </div>
+        </div>
+
+        {/* Connection Feedbacks */}
+        {testResult && (
+          <div className={`p-4 rounded-xl border text-xs font-bold leading-relaxed ${
+            testResult.success 
+              ? 'bg-green-50 text-green-700 border-green-100' 
+              : 'bg-red-50 text-red-600 border-red-100'
+          }`}>
+            {testResult.success ? '✓ ' : '⚠️ '} {testResult.message}
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button 
+            onClick={handleTestAndSave}
+            disabled={testing}
+            className="flex-1 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] disabled:opacity-50 text-white py-3.5 rounded-xl text-xs font-black tracking-wider transition-all shadow-md shadow-blue-600/10 flex items-center justify-center gap-2"
+          >
+            {testing ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                테스트 중...
+              </>
+            ) : (
+              '연결 테스트 및 동기화 활성화'
+            )}
+          </button>
+
+          {(githubToken || gistId) && (
+            <button 
+              onClick={handleDisconnect}
+              className="px-5 bg-red-50 hover:bg-red-100 active:scale-[0.98] text-red-600 border border-red-100 py-3.5 rounded-xl text-xs font-black tracking-wider transition-all"
+            >
+              연동 해제 / 로컬 모드 전환
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col">

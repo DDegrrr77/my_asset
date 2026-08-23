@@ -2,8 +2,6 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AppData, Account, MonthlyRecord, UserSettings, Holding } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
-const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN || "";
-const GIST_ID = import.meta.env.VITE_GIST_ID || "";
 const GIST_FILENAME = "wealthtrack-data.json";
 
 const STORAGE_KEY = 'wealthtrack_data_v1';
@@ -96,6 +94,8 @@ const defaultData: AppData = {
 interface DataContextType {
   data: AppData;
   storageSource: 'Gist' | 'LocalStorage';
+  githubToken: string;
+  gistId: string;
   saveMonthlyRecord: (record: MonthlyRecord) => void;
   deleteMonthlyRecord: (id: string) => void;
   updateSettings: (settings: UserSettings) => void;
@@ -106,6 +106,8 @@ interface DataContextType {
   importData: (jsonData: string) => boolean;
   exportData: () => string;
   setAppData: (data: AppData) => void;
+  updateGistConfig: (token: string, id: string) => void;
+  testConnection: (token?: string, id?: string) => Promise<{ success: boolean; message: string }>;
 }
 
 const DataContext = createContext<DataContextType | null>(null);
@@ -115,6 +117,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loaded, setLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [storageSource, setStorageSource] = useState<'Gist' | 'LocalStorage'>('LocalStorage');
+
+  // Load credential tokens reactively from local storage
+  const [githubToken, setGithubToken] = useState<string>(() => localStorage.getItem('WT_GITHUB_TOKEN') || '');
+  const [gistId, setGistId] = useState<string>(() => localStorage.getItem('WT_GIST_ID') || '');
 
   // Helper migration function
   const runMigration = (parsedData: AppData) => {
@@ -141,18 +147,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // GitHub Gist loading helper
-  const loadFromGist = async (): Promise<AppData | null> => {
-    if (!GITHUB_TOKEN || !GIST_ID) {
+  const loadFromGist = async (token: string, id: string): Promise<AppData | null> => {
+    if (!token || !id) {
       console.log('GitHub Gist credentials are not set. Falling back to LocalStorage.');
       return null;
     }
 
     try {
-      const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const response = await fetch(`https://api.github.com/gists/${id}`, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github.v3+json',
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
         },
       });
 
@@ -161,7 +168,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const gistData = await response.json();
-      const file = gistData.files && gistData.files[GIST_FILENAME];
+      // Look for the specific filename first, otherwise find the first key ending in .json
+      let file = gistData.files && gistData.files[GIST_FILENAME];
+      if (!file && gistData.files) {
+        const firstJsonFileKey = Object.keys(gistData.files).find(k => k.endsWith('.json'));
+        if (firstJsonFileKey) {
+          file = gistData.files[firstJsonFileKey];
+        }
+      }
+
       if (file && file.content) {
         const parsed = JSON.parse(file.content) as AppData;
         if (parsed && parsed.accounts && parsed.monthlyRecords) {
@@ -178,18 +193,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // GitHub Gist saving helper
   const saveToGist = async (newData: AppData) => {
-    if (!GITHUB_TOKEN || !GIST_ID) {
+    if (!githubToken || !gistId) {
       return;
     }
 
     setSyncing(true);
     try {
-      const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const response = await fetch(`https://api.github.com/gists/${gistId}`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Authorization': `Bearer ${githubToken}`,
           'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github.v3+json',
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
         },
         body: JSON.stringify({
           description: 'WealthTrack Application Data Sync',
@@ -214,29 +230,106 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Connection testing helper
+  const testConnection = async (tokenInput?: string, idInput?: string): Promise<{ success: boolean; message: string }> => {
+    const activeToken = tokenInput !== undefined ? tokenInput : githubToken;
+    const activeId = idInput !== undefined ? idInput : gistId;
+
+    if (!activeToken || !activeId) {
+      return { success: false, message: 'GitHub Token과 Gist ID를 모두 입력해 주세요.' };
+    }
+
+    try {
+      const response = await fetch(`https://api.github.com/gists/${activeId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${activeToken}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+      });
+
+      if (response.status === 401) {
+        return { success: false, message: '인증에 실패했습니다. 올바른 GitHub Personal Access Token인지 확인해 주세요. (HTTP 401)' };
+      }
+      if (response.status === 404) {
+        return { success: false, message: 'Gist를 찾을 수 없습니다. 올바른 Gist ID인지 확인해 주세요. (HTTP 404)' };
+      }
+      if (!response.ok) {
+        return { success: false, message: `연결 테스트 실패 (HTTP ${response.status})` };
+      }
+
+      const gistData = await response.json();
+      let foundFile = gistData.files && (gistData.files[GIST_FILENAME] || Object.values(gistData.files).find((f: any) => f.filename.endsWith('.json')));
+      
+      if (!foundFile) {
+        return { success: true, message: 'Gist 연결에 성공했으나 JSON 자산 데이터가 없습니다. 설정을 저장하면 새 데이터 동기화 파일이 생성됩니다.' };
+      }
+
+      return { success: true, message: '연결 테스트 성공! 유효한 Gist 데이터 소스를 찾았습니다.' };
+    } catch (err: any) {
+      return { success: false, message: `API 요청 중 오류가 발생했습니다: ${err.message || err}` };
+    }
+  };
+
+  // Config updater helper
+  const updateGistConfig = (token: string, id: string) => {
+    const trimmedToken = token.trim();
+    const trimmedId = id.trim();
+
+    if (trimmedToken && trimmedId) {
+      localStorage.setItem('WT_GITHUB_TOKEN', trimmedToken);
+      localStorage.setItem('WT_GIST_ID', trimmedId);
+      setGithubToken(trimmedToken);
+      setGistId(trimmedId);
+
+      setSyncing(true);
+      loadFromGist(trimmedToken, trimmedId).then(loadedData => {
+        if (loadedData) {
+          if (!loadedData.settings) {
+            loadedData.settings = defaultSettings;
+          }
+          runMigration(loadedData);
+          setData(loadedData);
+          setStorageSource('Gist');
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
+        } else {
+          // If load failed but settings are valid, initialize the Gist with existing data!
+          saveToGist(data);
+          setStorageSource('Gist');
+        }
+      }).finally(() => {
+        setSyncing(false);
+      });
+    } else {
+      localStorage.removeItem('WT_GITHUB_TOKEN');
+      localStorage.removeItem('WT_GIST_ID');
+      setGithubToken('');
+      setGistId('');
+      setStorageSource('LocalStorage');
+    }
+  };
+
   // Initialize and load data on app startup
   useEffect(() => {
     const initializeData = async () => {
       setSyncing(true);
       let loadedData: AppData | null = null;
 
-      if (GITHUB_TOKEN && GIST_ID) {
-        loadedData = await loadFromGist();
+      if (githubToken && gistId) {
+        loadedData = await loadFromGist(githubToken, gistId);
       }
 
       if (loadedData) {
-        // Ensure settings exist
         if (!loadedData.settings) {
           loadedData.settings = defaultSettings;
         }
         runMigration(loadedData);
         setData(loadedData);
         setStorageSource('Gist');
-        // Sync local storage as fallback
         localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
       } else {
         setStorageSource('LocalStorage');
-        // Fallback to local storage
         try {
           const stored = localStorage.getItem(STORAGE_KEY);
           if (stored) {
@@ -264,14 +357,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Debounced auto-sync to GitHub Gist when data changes
   useEffect(() => {
     if (!loaded) return;
-    if (!GITHUB_TOKEN || !GIST_ID) return;
+    if (!githubToken || !gistId) return;
 
     const timer = setTimeout(() => {
       saveToGist(data);
     }, 1500);
 
     return () => clearTimeout(timer);
-  }, [data, loaded]);
+  }, [data, loaded, githubToken, gistId]);
 
   const persist = (newData: AppData) => {
     setData(newData);
@@ -390,7 +483,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   if (!loaded) return null; // Or skeleton
 
   return (
-    <DataContext.Provider value={{ data, storageSource, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData }}>
+    <DataContext.Provider value={{ data, storageSource, githubToken, gistId, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData, updateGistConfig, testConnection }}>
       {children}
       {syncing && (
         <div className="fixed inset-0 bg-gray-950/20 backdrop-blur-sm flex flex-col items-center justify-center z-[9999]">
