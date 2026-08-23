@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { AppData, Account, MonthlyRecord, UserSettings, Holding } from '../types';
+import { AppData, Account, MonthlyRecord, UserSettings, Holding, RecordDetail } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 const GIST_FILENAME = "wealthtrack-data.json";
@@ -354,49 +354,38 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Initialize and load data on app startup
+  // Initialize and load data on app startup (instant local load)
   useEffect(() => {
-    const initializeData = async () => {
-      setSyncing(true);
-      let loadedData: AppData | null = null;
+    const initializeData = () => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsedData = JSON.parse(stored) as AppData;
+          if (!parsedData.settings) {
+            parsedData.settings = defaultSettings;
+          }
+          runMigration(parsedData);
+          setData(parsedData);
+        } else {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+          setData(defaultData);
+        }
+      } catch (e) {
+        console.error('Failed to load local storage data:', e);
+        setData(defaultData);
+      }
 
       if (githubToken && gistId) {
-        loadedData = await loadFromGist(githubToken, gistId);
-      }
-
-      if (loadedData) {
-        if (!loadedData.settings) {
-          loadedData.settings = defaultSettings;
-        }
-        runMigration(loadedData);
-        setData(loadedData);
         setStorageSource('Gist');
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
       } else {
         setStorageSource('LocalStorage');
-        try {
-          const stored = localStorage.getItem(STORAGE_KEY);
-          if (stored) {
-            const parsedData = JSON.parse(stored) as AppData;
-            if (!parsedData.settings) {
-              parsedData.settings = defaultSettings;
-            }
-            runMigration(parsedData);
-            setData(parsedData);
-          } else {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
-            setData(defaultData);
-          }
-        } catch (e) {
-          console.error('Failed to load local storage data fallback:', e);
-        }
       }
+
       setLoaded(true);
-      setSyncing(false);
     };
 
     initializeData();
-  }, []);
+  }, [githubToken, gistId]);
 
   // Debounced auto-sync to GitHub Gist when data changes
   useEffect(() => {
@@ -416,8 +405,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const saveMonthlyRecord = (record: MonthlyRecord) => {
-    const newData = { ...data, monthlyRecords: data.monthlyRecords.map(r => ({...r})) };
+    const newData = { 
+      ...data, 
+      monthlyRecords: data.monthlyRecords.map(r => ({...r})),
+      accounts: data.accounts.map(a => ({...a, holdings: (a.holdings || []).map((h: any) => ({...h}))})),
+      settings: { ...data.settings }
+    };
     
+    // Update global USD exchange rate if available in record meta
+    if (record.meta?.exchangeRate) {
+      const numRate = parseFloat(record.meta.exchangeRate);
+      if (!isNaN(numRate) && numRate > 0) {
+        newData.settings.usdExchangeRate = numRate;
+      }
+    }
+
     // Find the old record to calculate principal deltas
     let oldRecord = newData.monthlyRecords.find(r => r.yearMonth === record.yearMonth);
     if (!oldRecord) {
@@ -458,6 +460,54 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
     });
+
+    // Update main accounts holdings and valuations with the new prices if editing current or latest month
+    const latestMonth = newData.monthlyRecords.length > 0 ? newData.monthlyRecords[newData.monthlyRecords.length - 1].yearMonth : '';
+    if (record.yearMonth >= latestMonth) {
+      const recMap = new Map<string, RecordDetail>();
+      record.records.forEach(r => recMap.set(r.accountId, r));
+      const currentRate = parseFloat(record.meta?.exchangeRate || '') || newData.settings.usdExchangeRate || 1400;
+
+      newData.accounts = newData.accounts.map(acc => {
+        const accRec = recMap.get(acc.id);
+        if (!accRec) return acc;
+
+        const updatedHoldings = (acc.holdings || []).map((h: any) => {
+          const matchedH = (accRec.holdings || []).find((rh: any) => 
+            rh.name.trim() === (h.name || '').trim() || rh.id === h.id
+          );
+          if (matchedH && matchedH.price > 0) {
+            const dollarVal = record.meta?.dollarInputs?.[matchedH.name.trim()];
+            const priceUSD = dollarVal ? parseFloat(dollarVal) : (h.currentPriceUSD || (matchedH.price / currentRate));
+            const qty = matchedH.quantity !== undefined ? matchedH.quantity : (h.quantity || 0);
+            const totalVal = Math.round(qty * matchedH.price);
+
+            return {
+              ...h,
+              price: matchedH.price,
+              currentPrice: matchedH.price,
+              currentPriceUSD: priceUSD && !isNaN(priceUSD) ? priceUSD : undefined,
+              quantity: qty,
+              avgPrice: matchedH.avgPrice !== undefined ? matchedH.avgPrice : h.avgPrice,
+              totalValue: totalVal,
+              valuation: totalVal
+            };
+          }
+          return h;
+        });
+
+        const stockTotal = updatedHoldings.reduce((sum: number, h: any) => sum + (h.totalValue || h.valuation || ((h.price || 0) * (h.quantity || 0))), 0);
+        const cash = accRec.cashBalance !== undefined ? accRec.cashBalance : (acc.cash || 0);
+
+        return {
+          ...acc,
+          cash,
+          totalValuation: stockTotal + cash,
+          balance: stockTotal + cash,
+          holdings: updatedHoldings.length > 0 ? updatedHoldings : acc.holdings
+        };
+      });
+    }
 
     persist(newData);
   };

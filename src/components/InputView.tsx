@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useData } from '../store/DataContext';
 import { v4 as uuidv4 } from 'uuid';
 import { RecordDetail, Holding } from '../types';
 import { format } from 'date-fns';
 import { formatCurrency } from '../lib/utils';
+import { RefreshCw, CheckCircle2, TrendingUp } from 'lucide-react';
 
 type FormRecord = RecordDetail & { 
   monthlyDeposit: number | string; 
@@ -12,19 +13,77 @@ type FormRecord = RecordDetail & {
 };
 
 export default function InputView() {
-  const { data, saveMonthlyRecord, updateSettings } = useData();
+  const { data, saveMonthlyRecord, updateSettings, refreshFromGist, syncing } = useData();
   const [yearMonth, setYearMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [isBulkPriceModalOpen, setIsBulkPriceModalOpen] = useState(false);
+  const [isFetchingLatestPrices, setIsFetchingLatestPrices] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+  const getLatestStockMap = useCallback(() => {
+    const latestRate = data.settings?.usdExchangeRate || 
+      (data.monthlyRecords.length > 0 ? parseFloat(data.monthlyRecords[data.monthlyRecords.length - 1]?.meta?.exchangeRate || '') : null) ||
+      1400;
+
+    const stockMap: Record<string, {
+      priceKRW: number;
+      priceUSD?: number;
+      isUSD: boolean;
+    }> = {};
+
+    // 1. Scan data.accounts
+    data.accounts.forEach(acc => {
+      (acc.holdings || []).forEach((h: any) => {
+        const name = (h.name || '').trim();
+        if (!name) return;
+        
+        const isUSMarket = ['US', 'USA', 'OVERSEAS', 'NASDAQ', 'NYSE'].includes(String(h.market || '').toUpperCase());
+        const hasUSD = typeof h.currentPriceUSD === 'number' && h.currentPriceUSD > 0;
+        const krwPrice = Number(h.currentPrice || h.price || 0);
+
+        stockMap[name] = {
+          priceKRW: krwPrice > 0 ? krwPrice : (hasUSD ? Math.round(h.currentPriceUSD * latestRate) : 0),
+          priceUSD: hasUSD ? h.currentPriceUSD : (isUSMarket && krwPrice > 0 ? Number((krwPrice / latestRate).toFixed(2)) : undefined),
+          isUSD: isUSMarket || hasUSD
+        };
+      });
+    });
+
+    // 2. Scan latest monthly records if not in accounts
+    const sortedRecords = [...data.monthlyRecords].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+    const latestRec = sortedRecords.length > 0 ? sortedRecords[sortedRecords.length - 1] : null;
+    if (latestRec) {
+      const recRate = parseFloat(latestRec.meta?.exchangeRate || '') || latestRate;
+      const dollarInputs = latestRec.meta?.dollarInputs || {};
+
+      latestRec.records.forEach(accRec => {
+        (accRec.holdings || []).forEach(h => {
+          const name = (h.name || '').trim();
+          if (!name) return;
+          
+          const existing = stockMap[name];
+          const isDollar = !!dollarInputs[name] || (existing?.isUSD ?? false);
+          const usdVal = dollarInputs[name] ? parseFloat(dollarInputs[name]) : existing?.priceUSD;
+
+          if (!existing || existing.priceKRW === 0) {
+            stockMap[name] = {
+              priceKRW: h.price > 0 ? h.price : (usdVal ? Math.round(usdVal * recRate) : 0),
+              priceUSD: usdVal,
+              isUSD: isDollar
+            };
+          }
+        });
+      });
+    }
+
+    return { stockMap, latestRate };
+  }, [data.accounts, data.monthlyRecords, data.settings]);
+
   const [exchangeRate, setExchangeRate] = useState<string>(() => {
-    const latestRec = data.monthlyRecords.length > 0 ? data.monthlyRecords[data.monthlyRecords.length - 1] : null;
-    return (
-      (data.settings.usdExchangeRate ? String(data.settings.usdExchangeRate) : null) ||
-      latestRec?.meta?.exchangeRate ||
-      localStorage.getItem('snowball_exchange_rate') ||
-      '1400'
-    );
+    const { latestRate } = getLatestStockMap();
+    return String(latestRate);
   });
+
   const [dollarFlags, setDollarFlags] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('snowball_dollar_flags');
@@ -33,13 +92,14 @@ export default function InputView() {
       return {};
     }
   });
+
   const [dollarInputs, setDollarInputs] = useState<Record<string, string>>({});
   const [holdingOrder, setHoldingOrder] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('snowball_holding_order');
       return saved ? JSON.parse(saved) : [];
     } catch {
-      return {};
+      return [];
     }
   });
   
@@ -123,7 +183,8 @@ export default function InputView() {
   const uniqueHoldingNames = Array.from(
     new Set(
       Object.values(records)
-        .flatMap((accRec: FormRecord) => accRec.holdings.map((h: Holding) => h.name.trim()))
+        .flatMap((accRec: FormRecord) => (accRec.holdings || []).map((h: Holding) => h.name.trim()))
+        .concat(data.accounts.flatMap(a => (a.holdings || []).map((h: any) => (h.name || '').trim())))
         .filter(n => n && n !== '현금')
     )
   ).sort((a, b) => {
@@ -153,16 +214,29 @@ export default function InputView() {
   };
 
   const openBulkPriceModal = () => {
-    const currentRate = parseFloat(exchangeRate) || 1400;
-    const initialDollarInputs: Record<string, string> = {};
+    const { stockMap, latestRate } = getLatestStockMap();
+    const isCurrentOrFuture = yearMonth >= format(new Date(), 'yyyy-MM');
+    const activeRate = isCurrentOrFuture ? latestRate : (parseFloat(exchangeRate) || latestRate);
+    
+    setExchangeRate(String(activeRate));
+    
+    const initialDollarInputs: Record<string, string> = { ...dollarInputs };
+    const initialDollarFlags: Record<string, boolean> = { ...dollarFlags };
     
     uniqueHoldingNames.forEach(name => {
-      if (dollarFlags[name]) {
-         const currentKRW = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || 0;
-         initialDollarInputs[name] = currentKRW ? (currentKRW / currentRate).toFixed(2) : '';
+      const stockInfo = stockMap[name];
+      if (stockInfo?.isUSD || initialDollarFlags[name]) {
+        initialDollarFlags[name] = true;
+        if (stockInfo?.priceUSD) {
+          initialDollarInputs[name] = String(stockInfo.priceUSD);
+        } else {
+          const currentKRW = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || stockInfo?.priceKRW || 0;
+          initialDollarInputs[name] = currentKRW ? (currentKRW / activeRate).toFixed(2) : (initialDollarInputs[name] || '');
+        }
       }
     });
 
+    setDollarFlags(initialDollarFlags);
     setDollarInputs(initialDollarInputs);
     setIsBulkPriceModalOpen(true);
   };
@@ -228,10 +302,17 @@ export default function InputView() {
     });
     
     if (checked) {
-      const currentKRW = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || 0;
-      const rate = parseFloat(exchangeRate) || 1400;
-      const newDollarVal = currentKRW ? (currentKRW / rate).toFixed(2) : '';
-      setDollarInputs(prev => ({ ...prev, [name]: newDollarVal }));
+      const { stockMap, latestRate } = getLatestStockMap();
+      const stockInfo = stockMap[name];
+      const rate = parseFloat(exchangeRate) || latestRate;
+      
+      if (stockInfo?.priceUSD) {
+        setDollarInputs(prev => ({ ...prev, [name]: String(stockInfo.priceUSD) }));
+      } else {
+        const currentKRW = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || stockInfo?.priceKRW || 0;
+        const newDollarVal = currentKRW ? (currentKRW / rate).toFixed(2) : '';
+        setDollarInputs(prev => ({ ...prev, [name]: newDollarVal }));
+      }
     }
   };
   
@@ -246,10 +327,76 @@ export default function InputView() {
     }
   };
 
+  // Live Gist Sync Button Handler in modal
+  const handleFetchLatestPricesFromGist = async () => {
+    setIsFetchingLatestPrices(true);
+    try {
+      await refreshFromGist();
+      const { stockMap, latestRate } = getLatestStockMap();
+      const currentRate = data.settings?.usdExchangeRate || latestRate;
+      setExchangeRate(String(currentRate));
+
+      const updatedDollarInputs: Record<string, string> = { ...dollarInputs };
+      const updatedDollarFlags: Record<string, boolean> = { ...dollarFlags };
+      const priceMap: Record<string, number> = {};
+
+      uniqueHoldingNames.forEach(name => {
+        const info = stockMap[name];
+        if (!info) return;
+
+        if (info.isUSD || updatedDollarFlags[name]) {
+          updatedDollarFlags[name] = true;
+          if (info.priceUSD) {
+            updatedDollarInputs[name] = String(info.priceUSD);
+            priceMap[name] = Math.round(info.priceUSD * currentRate);
+          } else if (info.priceKRW > 0) {
+            updatedDollarInputs[name] = (info.priceKRW / currentRate).toFixed(2);
+            priceMap[name] = info.priceKRW;
+          }
+        } else if (info.priceKRW > 0) {
+          priceMap[name] = info.priceKRW;
+        }
+      });
+
+      setDollarFlags(updatedDollarFlags);
+      setDollarInputs(updatedDollarInputs);
+
+      // Apply price map to records
+      setRecords(prev => {
+        const next = { ...prev };
+        for (const accId in next) {
+          if (next[accId]) {
+            next[accId] = {
+              ...next[accId],
+              holdings: next[accId].holdings.map(h => {
+                const name = h.name.trim();
+                if (typeof priceMap[name] === 'number') {
+                  return { ...h, price: priceMap[name] };
+                }
+                return h;
+              })
+            };
+          }
+        }
+        return next;
+      });
+
+      setSyncNotice(`✓ 최신 시세 및 환율(${currentRate.toLocaleString()}원) 동기화 완료`);
+      setTimeout(() => setSyncNotice(null), 3000);
+    } catch (err: any) {
+      setSyncNotice('시세 불러오기 실패: 네트워크 상태를 확인해주세요.');
+      setTimeout(() => setSyncNotice(null), 3000);
+    } finally {
+      setIsFetchingLatestPrices(false);
+    }
+  };
+
   // Sync form with selected month's existing data or initialize blank
   useEffect(() => {
     const existing = data.monthlyRecords.find(r => r.yearMonth === yearMonth);
     const initialRecords: Record<string, FormRecord> = {};
+    const { stockMap, latestRate } = getLatestStockMap();
+    const isCurrentOrFuture = yearMonth >= format(new Date(), 'yyyy-MM');
     
     // Auto-fill from previous month
     const sortedRecords = [...data.monthlyRecords].sort((a,b) => a.yearMonth.localeCompare(b.yearMonth));
@@ -268,18 +415,28 @@ export default function InputView() {
       if (existing) {
         const accRec = existing.records.find(r => r.accountId === acc.id);
         if (accRec) {
+          // If current month or holding price is 0, provide default recommended price from stockMap
+          const holdingsWithLatestPrices = (accRec.holdings || []).map(h => {
+            const stockInfo = stockMap[h.name.trim()];
+            const price = (isCurrentOrFuture && stockInfo?.priceKRW) ? stockInfo.priceKRW : (h.price || stockInfo?.priceKRW || 0);
+            return {
+              ...h,
+              price
+            };
+          });
+
           initialRecords[acc.id] = {
             ...accRec,
             monthlyDeposit: accRec.principal - prevPrincipal,
             prevPrincipal,
             cashBalance: accRec.cashBalance || 0,
-            holdings: accRec.holdings || []
+            holdings: holdingsWithLatestPrices
           };
           return;
         }
       }
       
-      // If no existing record, try to copy from previous month or initialize empty
+      // If no existing record, try to copy from previous month or initialize empty with latest recommended prices
       if (prevAccRec) {
           initialRecords[acc.id] = { 
             accountId: acc.id, 
@@ -289,14 +446,29 @@ export default function InputView() {
             monthlyDeposit: 0,
             prevPrincipal,
             cashBalance: prevAccRec.cashBalance || 0,
-            holdings: (prevAccRec.holdings || []).map(h => ({
-              ...h,
-              id: uuidv4(),
-              price: 0,
-              dividend: 0
-            }))
+            holdings: (prevAccRec.holdings || []).map(h => {
+              const stockInfo = stockMap[h.name.trim()];
+              return {
+                ...h,
+                id: uuidv4(),
+                price: stockInfo?.priceKRW || h.price || 0,
+                dividend: 0
+              };
+            })
           };
       } else {
+        const accHoldings = (acc.holdings || []).map((h: any) => {
+          const stockInfo = stockMap[(h.name || '').trim()];
+          return {
+            id: uuidv4(),
+            name: h.name || '',
+            quantity: h.quantity || 0,
+            avgPrice: h.avgPrice || 0,
+            price: stockInfo?.priceKRW || h.price || h.currentPrice || 0,
+            dividend: 0
+          };
+        });
+
         initialRecords[acc.id] = { 
           accountId: acc.id, 
           principal: 0, 
@@ -304,27 +476,30 @@ export default function InputView() {
           dividend: 0, 
           monthlyDeposit: 0, 
           prevPrincipal: 0,
-          cashBalance: 0,
-          holdings: [] 
+          cashBalance: acc.cash || 0,
+          holdings: accHoldings 
         };
       }
     });
+
     setRecords(initialRecords);
-    if (existing && existing.meta && existing.meta.exchangeRate) {
+
+    if (existing && existing.meta && existing.meta.exchangeRate && !isCurrentOrFuture) {
       setExchangeRate(existing.meta.exchangeRate);
       setDollarInputs(existing.meta.dollarInputs || {});
     } else {
-      const latestRec = data.monthlyRecords.length > 0 ? data.monthlyRecords[data.monthlyRecords.length - 1] : null;
-      const rateVal = (
-        (data.settings.usdExchangeRate ? String(data.settings.usdExchangeRate) : null) ||
-        latestRec?.meta?.exchangeRate ||
-        localStorage.getItem('snowball_exchange_rate') ||
-        '1400'
-      );
-      setExchangeRate(rateVal);
-      setDollarInputs({});
+      const activeRate = data.settings?.usdExchangeRate || latestRate;
+      setExchangeRate(String(activeRate));
+      
+      const newDollarInputs: Record<string, string> = {};
+      Object.keys(stockMap).forEach(name => {
+        if (stockMap[name]?.priceUSD) {
+          newDollarInputs[name] = String(stockMap[name].priceUSD);
+        }
+      });
+      setDollarInputs(existing?.meta?.dollarInputs || newDollarInputs);
     }
-  }, [yearMonth, data.accounts, data.monthlyRecords, data.settings]);
+  }, [yearMonth, data.accounts, data.monthlyRecords, data.settings, getLatestStockMap]);
 
   const handleRecordChange = (accountId: string, field: 'monthlyDeposit' | 'principal' | 'cashBalance', value: string) => {
     let sanitized = value.replace(/[^0-9-]/g, '');
@@ -412,7 +587,14 @@ export default function InputView() {
   const handleSave = (customRecords?: Record<string, FormRecord>) => {
     const targetRecords = customRecords || records;
     const recordList: RecordDetail[] = data.accounts.map(acc => {
-      const r = targetRecords[acc.id];
+      const r = targetRecords[acc.id] || {
+        accountId: acc.id,
+        principal: 0,
+        valuation: 0,
+        cashBalance: 0,
+        dividend: 0,
+        holdings: []
+      };
       const holdings = r.holdings || [];
       const cash = Number(r.cashBalance) || 0;
       const valuation = holdings.reduce((sum, h) => sum + (h.price * h.quantity), 0) + cash;
@@ -439,39 +621,67 @@ export default function InputView() {
         dollarInputs
       }
     });
-    alert('저장되었습니다.');
+    alert('자산 스냅샷 및 종목 시세가 성공적으로 저장되었습니다.');
   };
 
   return (
     <div className="space-y-6">
-      {/* Calendar Section - Redesigned */}
+      {/* Calendar Section */}
       <div className="bg-white p-4 md:p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col">
         <div className="flex justify-between items-center mb-6">
           <button onClick={() => setCalendarYear(prev => prev - 1)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
           </button>
-          <div className="text-center">
-            <h2 className="text-xl font-black text-gray-900 tracking-tight">{calendarYear}</h2>
-            <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-0.5">자산 스냅샷 타임라인</div>
-          </div>
+          <span className="font-mono font-black text-xl text-gray-900 tracking-tight">{calendarYear}</span>
           <button onClick={() => setCalendarYear(prev => prev + 1)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" /></svg>
           </button>
         </div>
-        
-        <div className="grid grid-cols-4 md:grid-cols-6 gap-2 md:gap-3">
+
+        <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-2">
           {Array.from({ length: 12 }, (_, i) => {
-            const mStr = `${calendarYear}-${(i + 1).toString().padStart(2, '0')}`;
-            const record = data.monthlyRecords.find(r => r.yearMonth === mStr);
-            const totalValuation = record ? record.records.reduce((sum, r) => sum + r.valuation, 0) : null;
-            const isSelected = yearMonth === mStr;
-            const hasData = totalValuation !== null;
+            const m = (i + 1).toString().padStart(2, '0');
+            const ym = `${calendarYear}-${m}`;
+            const isSelected = yearMonth === ym;
+            const record = data.monthlyRecords.find(r => r.yearMonth === ym);
+            const isSaved = !!record;
+            const isCurrentMonth = format(new Date(), 'yyyy-MM') === ym;
+
+            const totalValuation = isSaved 
+              ? record.records.reduce((sum, r) => sum + r.valuation, 0)
+              : null;
 
             return (
-              <button key={mStr} onClick={() => setYearMonth(mStr)} className={`flex flex-col items-center justify-center p-2 rounded-xl border text-center transition-all min-h-[60px] ${isSelected ? 'bg-blue-600 border-blue-600 text-white shadow-lg z-10' : 'bg-gray-50 border-gray-100 hover:bg-blue-50 hover:border-blue-200'}`}>
-                <div className={`text-xs font-black ${isSelected ? 'text-blue-100' : 'text-gray-400'}`}>{i + 1}월</div>
-                <div className={`text-[9px] font-mono tracking-tighter truncate w-full px-1 mt-1 ${isSelected ? 'text-white font-bold' : (hasData ? 'text-gray-900 font-bold' : 'text-gray-300')}`}>
-                  {hasData ? formatCurrency(totalValuation) : '0'}
+              <button
+                key={m}
+                onClick={() => setYearMonth(ym)}
+                className={`relative flex flex-col items-center justify-between p-3 rounded-xl border transition-all text-left min-h-[72px] ${
+                  isSelected 
+                    ? 'border-blue-600 bg-blue-50/40 shadow-sm ring-2 ring-blue-600/20' 
+                    : isSaved
+                      ? 'border-gray-200 bg-white hover:border-blue-200 hover:bg-gray-50/50'
+                      : 'border-dashed border-gray-200 bg-gray-50/30 hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <div className="w-full flex justify-between items-start">
+                  <span className={`font-mono text-sm font-black ${isSelected ? 'text-blue-600' : isSaved ? 'text-gray-900' : 'text-gray-400'}`}>
+                    {i + 1}월
+                  </span>
+                  {isCurrentMonth && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                  )}
+                </div>
+
+                <div className="w-full mt-2">
+                  {isSaved && totalValuation !== null ? (
+                    <div className="text-[10px] font-mono font-bold text-gray-500 truncate text-right">
+                      {formatCurrency(totalValuation)}
+                    </div>
+                  ) : (
+                    <div className="text-[9px] font-bold text-gray-300 text-right uppercase tracking-wider">
+                      미작성
+                    </div>
+                  )}
                 </div>
               </button>
             );
@@ -479,338 +689,394 @@ export default function InputView() {
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-        <div className="mb-8 border-b border-gray-50 pb-5">
-          <div className="mb-5">
-            <h3 className="text-xl font-black text-gray-900 uppercase tracking-tight">
-              {yearMonth.split('-')[0]}년 {parseInt(yearMonth.split('-')[1])}월 자산 기록
-            </h3>
-            <p className="text-[11px] text-gray-400 font-bold mt-1">당월 기준 보유 종목 및 평가 상태를 기록합니다.</p>
+      {/* Main Input Form */}
+      <div className="bg-white p-4 md:p-8 rounded-2xl border border-gray-100 shadow-sm">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 pb-6 border-b border-gray-100">
+          <div>
+            <h2 className="text-xl font-black text-gray-900 tracking-tight flex items-center gap-3">
+              <span>{yearMonth.split('-')[0]}년 {parseInt(yearMonth.split('-')[1])}월 스냅샷</span>
+              {data.monthlyRecords.some(r => r.yearMonth === yearMonth) && (
+                <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-600 border border-blue-100/80">
+                  작성완료
+                </span>
+              )}
+            </h2>
+            <p className="text-xs font-semibold text-gray-400 mt-1">계좌별 납입 원금과 보유 종목 수량을 기록해 주세요.</p>
           </div>
 
-          <div className="mb-5 flex flex-col md:flex-row gap-3 items-center bg-gray-50/50 p-4 rounded-xl border border-gray-100">
-            <span className="text-[11px] font-black text-gray-500 uppercase tracking-widest whitespace-nowrap">데이터 복제</span>
-            <select 
-              value={selectedCloneMonth} 
-              onChange={e => setSelectedCloneMonth(e.target.value)}
-              className="flex-1 w-full md:w-auto bg-white border border-gray-200 text-sm font-bold rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">다른 월에서 데이터 불러오기</option>
-              {data.monthlyRecords.map(r => (
-                <option key={r.yearMonth} value={r.yearMonth}>{r.yearMonth.split('-')[0]}년 {parseInt(r.yearMonth.split('-')[1])}월</option>
-              ))}
-            </select>
-            <button 
-              onClick={cloneDataFromMonth}
-              disabled={!selectedCloneMonth}
-              className="w-full md:w-auto px-6 py-2.5 bg-white border border-gray-200 text-gray-700 text-[11px] font-black tracking-widest uppercase rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              불러오기
-            </button>
-          </div>
+          <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+            {/* Clone Button */}
+            <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200/80 rounded-xl p-1.5">
+              <select
+                value={selectedCloneMonth}
+                onChange={e => setSelectedCloneMonth(e.target.value)}
+                className="bg-transparent text-xs font-bold text-gray-700 focus:outline-none px-2 cursor-pointer"
+              >
+                <option value="">과거 내역 복사</option>
+                {data.monthlyRecords
+                  .filter(r => r.yearMonth !== yearMonth)
+                  .sort((a, b) => b.yearMonth.localeCompare(a.yearMonth))
+                  .map(r => (
+                    <option key={r.yearMonth} value={r.yearMonth}>
+                      {r.yearMonth.split('-')[0]}년 {parseInt(r.yearMonth.split('-')[1])}월
+                    </option>
+                  ))}
+              </select>
+              <button
+                onClick={cloneDataFromMonth}
+                disabled={!selectedCloneMonth}
+                className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 hover:text-blue-600 hover:border-blue-200 disabled:opacity-40 disabled:hover:text-gray-700 disabled:hover:border-gray-200 rounded-lg text-xs font-black transition-all shadow-sm"
+              >
+                불러오기
+              </button>
+            </div>
 
-          <div className="flex gap-3">
-            <button onClick={openBulkPriceModal} className="flex-1 py-3.5 bg-gray-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl shadow-lg hover:bg-gray-800 transition-all active:scale-95">
-              현재가 입력
-            </button>
-            <button onClick={() => handleSave()} className="flex-1 py-3.5 bg-blue-600 text-white text-[11px] font-black uppercase tracking-widest rounded-xl shadow-blue-200 shadow-lg hover:bg-blue-700 transition-all active:scale-95">
-              저장하기
+            {/* Bulk Price Input Modal Trigger */}
+            <button
+              onClick={openBulkPriceModal}
+              className="px-4 py-2.5 bg-blue-50 text-blue-600 hover:bg-blue-100/80 border border-blue-200/80 rounded-xl text-xs font-black transition-all flex items-center gap-2 shadow-sm"
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              현재가 일괄 입력
             </button>
           </div>
         </div>
-        
-        <div className="space-y-12">
-          {data.accounts.map((acc, aIdx) => {
-            const accRec = records[acc.id];
-            if (!accRec) return null;
-            const isExpanded = !!expandedAccounts[acc.id];
+
+        {/* Account Records List */}
+        <div className="space-y-6">
+          {data.accounts.map(acc => {
+            const formRec = records[acc.id] || {
+              accountId: acc.id,
+              principal: 0,
+              monthlyDeposit: 0,
+              prevPrincipal: 0,
+              cashBalance: 0,
+              valuation: 0,
+              dividend: 0,
+              holdings: []
+            };
+
+            const isExpanded = expandedAccounts[acc.id] !== false; // default expanded
+
+            const accountStockValuation = (formRec.holdings || []).reduce((sum, h) => sum + (h.price * h.quantity), 0);
+            const totalAccountValuation = accountStockValuation + (Number(formRec.cashBalance) || 0);
 
             return (
-              <div key={acc.id} className="relative bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4">
+              <div key={acc.id} className="border border-gray-100 rounded-2xl overflow-hidden shadow-sm hover:border-gray-200 transition-all bg-white">
+                {/* Account Header */}
                 <div 
-                  className="p-5 cursor-pointer hover:bg-gray-50/50 transition-colors"
                   onClick={() => toggleAccountExpand(acc.id)}
+                  className="p-4 md:p-5 bg-gray-50/50 hover:bg-gray-50 flex items-center justify-between cursor-pointer border-b border-gray-100 select-none transition-colors"
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-3">
-                      <div className="w-8 h-8 bg-gray-900 text-white rounded-lg flex items-center justify-center font-black text-xs shrink-0 mt-0.5">{acc.name.charAt(0)}</div>
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-black text-gray-900 text-sm truncate max-w-[150px] sm:max-w-xs">{acc.name}</h4>
-                          <span className="text-[8px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">{acc.type} 계좌</span>
-                        </div>
-                        <div className="flex items-baseline gap-1.5 mt-1">
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">총 평가액</span>
-                          <span className="text-sm font-black text-blue-600 font-mono">
-                            {formatCurrency(accRec.holdings.reduce((sum, h) => sum + (h.price * h.quantity), 0) + (Number(accRec.cashBalance) || 0))}
-                          </span>
-                        </div>
-                      </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
+                    <div>
+                      <span className="font-black text-sm text-gray-900">{acc.name}</span>
+                      <span className="ml-2 text-[10px] font-bold px-2 py-0.5 rounded-md bg-gray-200/60 text-gray-600">{acc.type}</span>
                     </div>
-                    <div className={`p-1 text-gray-400 transition-transform duration-200 mt-1 ${isExpanded ? 'rotate-180' : ''}`}>
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7 7" /></svg>
+                  </div>
+
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <div className="font-mono font-black text-sm text-gray-900">{formatCurrency(totalAccountValuation)}</div>
+                      <div className="text-[10px] font-bold text-gray-400">평가액 합계</div>
                     </div>
+                    <svg className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                    </svg>
                   </div>
                 </div>
 
-                {/* Body Content - Collapsible */}
                 {isExpanded && (
-                  <div className="p-5 pt-0 border-t border-gray-50">
-                    {/* Cash Flows - Responsive Layout */}
-                    <div className="mb-6">
-                  {/* Desktop: 3-Column Grid */}
-                  <div className="hidden md:grid md:grid-cols-3 gap-3">
-                    <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5">당월 입금액</label>
-                      <div className="relative">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.monthlyDeposit)} onChange={(e) => handleRecordChange(acc.id, 'monthlyDeposit', e.target.value)} className="w-full bg-transparent text-right font-mono text-base font-bold focus:outline-none pr-6 text-gray-900" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-gray-400 text-[10px] font-mono">원</span>
+                  <div className="p-4 md:p-6 space-y-6">
+                    {/* Principal & Cash Inputs */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-gray-50/30 p-4 rounded-xl border border-gray-100">
+                      <div>
+                        <label className="block text-[11px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+                          당월 입금액 (원)
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={displayFormat(formRec.monthlyDeposit)}
+                          onChange={e => handleRecordChange(acc.id, 'monthlyDeposit', e.target.value)}
+                          placeholder="0"
+                          className="w-full p-2.5 bg-white border border-gray-200 rounded-lg text-right font-mono font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+                          누적 원금 (원)
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={displayFormat(formRec.principal)}
+                          onChange={e => handleRecordChange(acc.id, 'principal', e.target.value)}
+                          placeholder="0"
+                          className="w-full p-2.5 bg-white border border-gray-200 rounded-lg text-right font-mono font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+                          예수금 / 현금 (원)
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={displayFormat(formRec.cashBalance)}
+                          onChange={e => handleRecordChange(acc.id, 'cashBalance', e.target.value)}
+                          placeholder="0"
+                          className="w-full p-2.5 bg-white border border-gray-200 rounded-lg text-right font-mono font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm"
+                        />
                       </div>
                     </div>
-                    <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5">누적 원금</label>
-                      <div className="relative">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.principal)} onChange={(e) => handleRecordChange(acc.id, 'principal', e.target.value)} className="w-full bg-transparent text-right font-mono text-base font-bold focus:outline-none pr-6 text-gray-900" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-gray-400 text-[10px] font-mono">원</span>
+
+                    {/* Holdings Table */}
+                    <div>
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-xs font-black text-gray-700 tracking-tight">보유 종목 리스트</span>
+                        <button
+                          onClick={() => addHoldingRow(acc.id)}
+                          className="text-[11px] font-black text-blue-600 hover:text-blue-700 flex items-center gap-1 hover:underline"
+                        >
+                          + 종목 추가
+                        </button>
                       </div>
-                    </div>
-                    <div className="bg-gray-50 p-4 rounded-2xl border border-blue-100 bg-blue-50/30">
-                      <label className="block text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1.5">예수금 (현금)</label>
-                      <div className="relative">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.cashBalance)} onChange={(e) => handleRecordChange(acc.id, 'cashBalance', e.target.value)} className="w-full bg-transparent text-right font-mono text-base font-bold focus:outline-none pr-6 text-blue-600" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-blue-400 text-[10px] font-mono">원</span>
+
+                      <div className="space-y-2">
+                        {(formRec.holdings || []).map((h, idx) => {
+                          const valuation = (h.price || 0) * (h.quantity || 0);
+                          const isHoldingExpanded = expandedHoldings.has(h.id);
+
+                          return (
+                            <div key={h.id} className="border border-gray-100 rounded-xl overflow-hidden bg-white hover:border-gray-200 transition-colors">
+                              <div className="p-3 px-4 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <div className="flex flex-col gap-0.5 shrink-0">
+                                    <button onClick={() => moveHoldingInAccount(acc.id, idx, 'up')} className="text-gray-300 hover:text-blue-600 transition-colors">
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 15l7-7 7 7" /></svg>
+                                    </button>
+                                    <button onClick={() => moveHoldingInAccount(acc.id, idx, 'down')} className="text-gray-300 hover:text-blue-600 transition-colors">
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" /></svg>
+                                    </button>
+                                  </div>
+                                  <input
+                                    type="text"
+                                    value={h.name}
+                                    onChange={e => handleHoldingChange(acc.id, h.id, 'name', e.target.value)}
+                                    placeholder="종목명"
+                                    className="font-bold text-sm text-gray-900 bg-transparent focus:outline-none w-full"
+                                  />
+                                </div>
+
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <div className="flex items-center bg-gray-50 border border-gray-200/80 rounded-lg px-2.5 py-1">
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      value={displayFormat(h.quantity)}
+                                      onChange={e => handleHoldingChange(acc.id, h.id, 'quantity', e.target.value)}
+                                      placeholder="0"
+                                      className="w-16 bg-transparent text-right font-mono font-bold text-xs text-gray-900 focus:outline-none"
+                                    />
+                                    <span className="text-[10px] font-bold text-gray-400 ml-1">주</span>
+                                  </div>
+
+                                  <div className="text-right min-w-[80px]">
+                                    <div className="font-mono font-black text-xs text-blue-600">{displayFormat(valuation) || '0'}원</div>
+                                    <div className="text-[9px] font-bold text-gray-400">@{displayFormat(h.price) || '0'}원</div>
+                                  </div>
+
+                                  <button
+                                    onClick={() => toggleHoldingExpand(h.id)}
+                                    className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                                  >
+                                    <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${isHoldingExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {isHoldingExpanded && (
+                                <div className="p-3 px-4 bg-gray-50/50 border-t border-gray-100 flex flex-wrap items-center justify-between gap-4">
+                                  <div className="flex items-center gap-4 flex-wrap">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[11px] font-black text-gray-400">평단가:</span>
+                                      <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={displayFormat(h.avgPrice)}
+                                        onChange={e => handleHoldingChange(acc.id, h.id, 'avgPrice', e.target.value)}
+                                        placeholder="0"
+                                        className="w-24 p-1.5 bg-white border border-gray-200 rounded-lg text-right font-mono font-bold text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                      <span className="text-[10px] font-bold text-gray-400">원</span>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[11px] font-black text-green-600">배당금:</span>
+                                      <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={displayFormat(h.dividend)}
+                                        onChange={e => handleHoldingChange(acc.id, h.id, 'dividend', e.target.value)}
+                                        placeholder="0"
+                                        className="w-24 p-1.5 bg-white border border-gray-200 rounded-lg text-right font-mono font-bold text-xs text-green-700 focus:outline-none focus:ring-1 focus:ring-green-500"
+                                      />
+                                      <span className="text-[10px] font-bold text-green-600">원</span>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    onClick={() => removeHoldingRow(acc.id, h.id)}
+                                    className="text-xs font-bold text-red-500 hover:text-red-700 hover:underline"
+                                  >
+                                    삭제
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
-
-                  {/* Mobile: Vertical List Box */}
-                  <div className="md:hidden bg-gray-50 rounded-2xl border border-gray-100 divide-y divide-gray-200/50">
-                    <div className="flex items-center justify-between p-4 px-5">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">당월 입금액</label>
-                      <div className="relative flex-1 max-w-[150px]">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.monthlyDeposit)} onChange={(e) => handleRecordChange(acc.id, 'monthlyDeposit', e.target.value)} className="w-full bg-transparent text-right font-mono text-sm font-bold focus:outline-none pr-5 text-gray-900" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-gray-400 text-[9px] font-mono">원</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between p-4 px-5">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">누적 원금</label>
-                      <div className="relative flex-1 max-w-[150px]">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.principal)} onChange={(e) => handleRecordChange(acc.id, 'principal', e.target.value)} className="w-full bg-transparent text-right font-mono text-sm font-bold focus:outline-none pr-5 text-gray-900" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-gray-400 text-[9px] font-mono">원</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between p-4 px-5 bg-blue-50/20 rounded-b-2xl">
-                      <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest">예수금 (현금)</label>
-                      <div className="relative flex-1 max-w-[150px]">
-                        <input type="text" inputMode="numeric" value={displayFormat(accRec.cashBalance)} onChange={(e) => handleRecordChange(acc.id, 'cashBalance', e.target.value)} className="w-full bg-transparent text-right font-mono text-sm font-bold focus:outline-none pr-5 text-blue-600" placeholder="0" />
-                        <span className="absolute right-0 top-0.5 text-blue-400 text-[9px] font-mono">원</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Holdings - Responsive Layout */}
-                <div className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm">
-                  {/* Collapsible Accordion List View (Used across all screen sizes) */}
-                  <div className="divide-y divide-gray-100">
-                    {accRec.holdings.map((h, hIdx) => {
-                      const priceTabM = 1000 + aIdx * 100 + hIdx;
-                      const divTabM = 2000 + aIdx * 100 + hIdx;
-                      const isExpanded = expandedHoldings.has(h.id);
-                      const qty = parseFloat(String(h.quantity)) || 0;
-                      const price = parseFloat(String(h.price)) || 0;
-                      const valuation = qty * price;
-
-                      return (
-                      <div key={h.id} className="cursor-pointer bg-white" onClick={() => toggleHoldingExpand(h.id)}>
-                        {/* Compact View */}
-                        <div className="p-4 flex items-center justify-between gap-3">
-                          <div className="flex-1 min-w-0 flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
-                            <input 
-                              type="text" 
-                              value={h.name} 
-                              onChange={e => handleHoldingChange(acc.id, h.id, 'name', e.target.value)} 
-                              placeholder="종목명" 
-                              className="bg-transparent font-black text-gray-900 text-[15px] focus:outline-none w-full"
-                            />
-                            <div className="flex items-center text-gray-500 font-bold text-[12px] gap-0">
-                              <input 
-                                type="text" 
-                                inputMode="decimal"
-                                tabIndex={priceTabM}
-                                data-focus-type="price"
-                                onKeyDown={e => handleInputKeyDown(e, 'price')}
-                                value={displayFormat(h.price)} 
-                                onChange={e => handleHoldingChange(acc.id, h.id, 'price', e.target.value)} 
-                                placeholder="0" 
-                                className="bg-transparent focus:outline-none font-mono w-[64px]"
-                              />
-                              <span className="shrink-0 -ml-1">원</span>
-                              <span className="text-gray-300 mx-2 shrink-0">·</span>
-                              <input 
-                                type="text" 
-                                inputMode="decimal" 
-                                value={displayFormat(h.quantity)} 
-                                onChange={e => handleHoldingChange(acc.id, h.id, 'quantity', e.target.value)} 
-                                placeholder="0" 
-                                className="bg-transparent focus:outline-none font-mono w-[40px] text-right"
-                              />
-                              <span className="shrink-0 ml-1">주</span>
-                            </div>
-                          </div>
-                          
-                          <div className="flex flex-col items-end shrink-0 pl-2">
-                            <div className="font-mono font-black text-blue-600 text-[14px]">{valuation ? displayFormat(valuation) : '0'}원</div>
-                            <div className="text-gray-300 mt-1 cursor-pointer p-1 -mr-1 transition-transform duration-300" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-                              <svg className={`w-4 h-4 ${isExpanded ? 'text-blue-500' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7 7" /></svg>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Expanded Detail View */}
-                        <div className={`overflow-hidden transition-all duration-300 ease-out bg-gray-50/50 ${isExpanded ? 'max-h-[120px] opacity-100 border-t border-gray-100' : 'max-h-0 opacity-0'}`} onClick={(e) => e.stopPropagation()}>
-                          <div className="p-3 px-4 flex items-center justify-between">
-                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                              <span className="hidden min-[769px]:inline text-[11px] font-black text-gray-400 shrink-0">평단가:</span>
-                              <span className="inline min-[769px]:hidden text-[11px] font-black text-gray-400 shrink-0">평:</span>
-                              <input 
-                                type="text" 
-                                inputMode="decimal" 
-                                value={displayFormat(h.avgPrice)} 
-                                onChange={e => handleHoldingChange(acc.id, h.id, 'avgPrice', e.target.value)} 
-                                placeholder="0" 
-                                className="flex-1 min-w-0 w-full bg-transparent focus:outline-none font-mono text-[13px] font-bold text-gray-700" 
-                              />
-                              <span className="text-[11px] font-bold text-gray-400 -ml-1">원</span>
-                            </div>
-                            
-                            <div className="flex items-center gap-1.5 flex-1 min-w-0 px-2 border-l border-gray-200/60 mx-2">
-                              <span className="hidden min-[769px]:inline text-[11px] font-black text-green-600 shrink-0">배당금:</span>
-                              <span className="inline min-[769px]:hidden text-[11px] font-black text-green-600 shrink-0">배:</span>
-                              <input 
-                                type="text" 
-                                inputMode="decimal" 
-                                tabIndex={divTabM}
-                                data-focus-type="dividend"
-                                onKeyDown={e => handleInputKeyDown(e, 'dividend')}
-                                value={displayFormat(h.dividend)} 
-                                onChange={e => handleHoldingChange(acc.id, h.id, 'dividend', e.target.value)} 
-                                placeholder="0" 
-                                className="flex-1 min-w-0 w-full bg-transparent focus:outline-none font-mono text-[13px] font-black text-green-700" 
-                              />
-                              <span className="text-[11px] font-bold text-green-600 -ml-1">원</span>
-                            </div>
-
-                            <div className="hidden min-[769px]:flex shrink-0 items-center pl-2 ml-auto border-l border-gray-200/60">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); removeHoldingRow(acc.id, h.id); }} 
-                                className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-red-500 bg-white hover:bg-red-50 rounded-xl shadow-[0_2px_8px_-4px_rgba(0,0,0,0.05)] border border-gray-100 transition-all text-sm"
-                                aria-label="Delete asset"
-                              >
-                                🗑️
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      )
-                    })}
-                  </div>
-
-                  <button onClick={() => addHoldingRow(acc.id)} className="w-full py-3 bg-gray-50/50 text-[10px] font-black text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-all border-t border-gray-50 flex items-center justify-center gap-2 uppercase tracking-widest">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 4v16m8-8H4" /></svg>
-                    종목 추가
-                  </button>
-                </div>
+                )}
               </div>
-            )}
-            </div>
-          );
+            );
           })}
         </div>
 
-        <button onClick={() => handleSave()} className="w-full mt-10 py-5 rounded-2xl bg-gray-900 text-white text-[11px] font-black uppercase tracking-[0.2em] shadow-2xl hover:bg-blue-600 hover:shadow-blue-200 transition-all active:scale-[0.98]">
-          스냅샷 저장
+        <button 
+          onClick={() => handleSave()} 
+          className="w-full mt-8 py-4 rounded-xl bg-gray-900 hover:bg-blue-600 text-white text-xs font-black uppercase tracking-widest transition-all shadow-md active:scale-[0.99]"
+        >
+          스냅샷 저장하기
         </button>
       </div>
 
+      {/* Bulk Price Input Modal */}
       {isBulkPriceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
-              <h3 className="font-black text-gray-900 text-sm uppercase tracking-tight">현재가 입력</h3>
+            <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
+              <div>
+                <h3 className="font-black text-gray-900 text-sm uppercase tracking-tight">종목별 현재가 일괄 입력</h3>
+                <p className="text-[10px] font-semibold text-gray-400 mt-0.5">시세 정보를 업데이트하면 메인 계좌 및 스냅샷에 동시 반영됩니다.</p>
+              </div>
               <button onClick={() => setIsBulkPriceModalOpen(false)} className="p-2 text-gray-400 hover:text-gray-900 transition-colors">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
             
-            <div className="p-4 px-6 bg-blue-50/30 border-b border-gray-100 flex items-center justify-between shrink-0">
-              <span className="font-black text-[11px] text-gray-600 uppercase tracking-widest">달러 환율 ($)</span>
-              <div className="relative w-32">
-                 <input
-                   type="text"
-                   inputMode="decimal"
-                   value={exchangeRate}
-                   onChange={e => handleRateChange(e.target.value)}
-                   className="w-full py-2 pr-6 pl-3 bg-white border border-blue-200 rounded-lg text-right font-mono font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm"
-                 />
-                 <span className="absolute right-3 top-2.5 text-[10px] text-gray-400 font-mono">원</span>
+            {/* Live Gist Sync Action & Rate Bar */}
+            <div className="p-4 px-6 bg-blue-50/40 border-b border-blue-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <button
+                onClick={handleFetchLatestPricesFromGist}
+                disabled={isFetchingLatestPrices || syncing}
+                className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 text-white rounded-xl text-xs font-black tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm shadow-blue-600/10"
+              >
+                <RefreshCw size={13} className={isFetchingLatestPrices || syncing ? 'animate-spin' : ''} />
+                최신 시세/환율 가져오기
+              </button>
+
+              <div className="flex items-center gap-2 justify-end">
+                <span className="font-black text-[11px] text-gray-600 uppercase tracking-wider">기준 환율 ($)</span>
+                <div className="relative w-28">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={exchangeRate}
+                    onChange={e => handleRateChange(e.target.value)}
+                    className="w-full py-1.5 pr-6 pl-2.5 bg-white border border-blue-200 rounded-lg text-right font-mono font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-xs"
+                  />
+                  <span className="absolute right-2 top-2 text-[10px] text-gray-400 font-mono">원</span>
+                </div>
               </div>
             </div>
 
-            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            {syncNotice && (
+              <div className="px-6 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-700 text-xs font-black flex items-center gap-1.5">
+                <CheckCircle2 size={14} />
+                <span>{syncNotice}</span>
+              </div>
+            )}
+
+            {/* Holdings Price Input List */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-3">
               {uniqueHoldingNames.length === 0 ? (
-                 <p className="text-center text-[10px] font-black tracking-widest text-gray-400 uppercase py-8">등록된 종목이 없습니다.</p>
+                <p className="text-center text-xs font-bold text-gray-400 py-8">등록된 종목이 없습니다.</p>
               ) : (
                 uniqueHoldingNames.map(name => {
-                   const isDollar = !!dollarFlags[name];
-                   const displayValue = isDollar ? (dollarInputs[name] || '') : (Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || '');
-                   
-                   return (
-                     <div key={name} className="flex flex-col gap-2 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 hover:border-blue-100 hover:bg-blue-50/20 transition-colors">
-                       <div className="flex justify-between items-center">
-                         <div className="flex items-center gap-2">
-                           <div className="flex flex-col gap-0">
-                             <button onClick={() => moveHolding(name, 'up')} className="p-0.5 text-gray-300 hover:text-blue-600 transition-colors">
-                               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 15l7-7 7 7" /></svg>
-                             </button>
-                             <button onClick={() => moveHolding(name, 'down')} className="p-0.5 text-gray-300 hover:text-blue-600 transition-colors">
-                               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" /></svg>
-                             </button>
-                           </div>
-                           <span className="font-black text-xs text-gray-900 leading-tight break-words">{name}</span>
-                         </div>
-                         <label className="flex items-center gap-2 cursor-pointer">
-                           <input type="checkbox" checked={isDollar} onChange={e => handleDollarFlagChange(name, e.target.checked)} className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 mt-0.5" />
-                           <span className="text-[10px] font-black tracking-widest text-gray-500">$ 입력</span>
-                         </label>
-                       </div>
-                       <div className="relative w-full">
-                         <input 
-                           type="text" 
-                           inputMode="decimal" 
-                           value={displayValue} 
-                           onChange={e => handlePriceInput(name, e.target.value)} 
-                           placeholder="0" 
-                           className="w-full p-3 bg-white border border-gray-200 rounded-xl text-right font-mono font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10 shadow-sm text-sm"
-                         />
-                         <span className="absolute right-3 top-3.5 text-[9px] text-gray-400 font-black uppercase tracking-widest">{isDollar ? '달러' : '원'}</span>
-                       </div>
-                     </div>
-                   );
+                  const isDollar = !!dollarFlags[name];
+                  const currentHoldingPrice = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price;
+                  const displayValue = isDollar 
+                    ? (dollarInputs[name] || '') 
+                    : (currentHoldingPrice !== undefined && currentHoldingPrice > 0 ? String(currentHoldingPrice) : '');
+                  
+                  return (
+                    <div key={name} className="flex flex-col gap-2 bg-gray-50/50 p-3.5 rounded-2xl border border-gray-100 hover:border-blue-100 hover:bg-blue-50/20 transition-colors">
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <div className="flex flex-col gap-0">
+                            <button onClick={() => moveHolding(name, 'up')} className="p-0.5 text-gray-300 hover:text-blue-600 transition-colors">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 15l7-7 7 7" /></svg>
+                            </button>
+                            <button onClick={() => moveHolding(name, 'down')} className="p-0.5 text-gray-300 hover:text-blue-600 transition-colors">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" /></svg>
+                            </button>
+                          </div>
+                          <span className="font-black text-xs text-gray-900 leading-tight break-words">{name}</span>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={isDollar} 
+                            onChange={e => handleDollarFlagChange(name, e.target.checked)} 
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 mt-0.5" 
+                          />
+                          <span className="text-[10px] font-black tracking-wider text-gray-500">$ 달러 입력</span>
+                        </label>
+                      </div>
+                      <div className="relative w-full">
+                        <input 
+                          type="text" 
+                          inputMode="decimal" 
+                          value={displayValue} 
+                          onChange={e => handlePriceInput(name, e.target.value)} 
+                          placeholder="0" 
+                          className="w-full p-2.5 bg-white border border-gray-200 rounded-xl text-right font-mono font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-12 shadow-sm text-sm"
+                        />
+                        <span className="absolute right-3 top-3 text-[10px] text-gray-400 font-black uppercase tracking-wider">{isDollar ? '달러 ($)' : '원'}</span>
+                      </div>
+                    </div>
+                  );
                 })
               )}
             </div>
-            <div className="p-6 border-t border-gray-100 bg-gray-50/50 shrink-0">
+
+            <div className="p-5 border-t border-gray-100 bg-gray-50/50 shrink-0">
               <button 
                 onClick={() => {
                   let next: Record<string, FormRecord> = {};
                   const priceMap: Record<string, number> = {};
+                  const rate = parseFloat(exchangeRate) || 1400;
+
                   uniqueHoldingNames.forEach(name => {
-                    const found = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name && h.price > 0);
-                    const fallback = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || 0;
-                    priceMap[name] = found ? found.price : fallback;
+                    if (dollarFlags[name] && dollarInputs[name]) {
+                      const usd = parseFloat(dollarInputs[name].replace(/[^0-9.]/g, '')) || 0;
+                      priceMap[name] = Math.round(usd * rate);
+                    } else {
+                      const found = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name && h.price > 0);
+                      const fallback = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || 0;
+                      priceMap[name] = found ? found.price : fallback;
+                    }
                   });
+
                   next = { ...records };
                   for (const accId in next) {
                     if (next[accId]) {
@@ -827,9 +1093,9 @@ export default function InputView() {
                   handleSave(next);
                   setIsBulkPriceModalOpen(false);
                 }} 
-                className="w-full py-4 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 active:scale-[0.98]"
+                className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-md shadow-blue-600/10 active:scale-[0.99]"
               >
-                완료
+                적용 및 저장하기
               </button>
             </div>
           </div>
@@ -838,5 +1104,3 @@ export default function InputView() {
     </div>
   );
 }
-
-

@@ -346,7 +346,7 @@ function AppContent() {
 }
 
 function MainApp() {
-  const { data } = useData();
+  const { data, refreshFromGist } = useData();
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return sessionStorage.getItem('is_authenticated') === 'true';
   });
@@ -354,6 +354,8 @@ function MainApp() {
   const handleAuthenticated = () => {
     setIsAuthenticated(true);
     sessionStorage.setItem('is_authenticated', 'true');
+    // 로그인 성공 시 최신 Gist 데이터와 동기화
+    refreshFromGist();
   };
 
   if (!data.settings?.pin) {
