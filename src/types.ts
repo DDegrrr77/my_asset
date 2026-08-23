@@ -31,9 +31,11 @@ export interface MonthlyRecord {
   records: RecordDetail[];
   createdAt: number;
   meta?: {
-    exchangeRate: string;
-    dollarInputs: Record<string, string>;
+    exchangeRate?: string;
+    dollarInputs?: Record<string, string>;
+    [key: string]: any;
   };
+  [key: string]: any;
 }
 
 export interface UserSettings {
@@ -41,10 +43,17 @@ export interface UserSettings {
   userName?: string;
   pin?: string;
   usdExchangeRate?: number;
+  [key: string]: any;
 }
 
 export interface AppData {
   accounts: Account[];
   monthlyRecords: MonthlyRecord[];
   settings: UserSettings;
+  meta?: {
+    exchangeRate?: string;
+    dollarInputs?: Record<string, string>;
+    [key: string]: any;
+  };
+  [key: string]: any;
 }

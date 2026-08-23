@@ -127,8 +127,40 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Helper migration function
   const runMigration = (parsedData: AppData) => {
     try {
+      const anyData = parsedData as any;
+      if (anyData['메타'] && !parsedData.meta) {
+        parsedData.meta = anyData['메타'];
+      }
+      if (parsedData.meta) {
+        const anyMeta = parsedData.meta as any;
+        if (anyMeta['환율'] && !parsedData.meta.exchangeRate) {
+          parsedData.meta.exchangeRate = String(anyMeta['환율']);
+        }
+        if (anyMeta['달러입력'] && !parsedData.meta.dollarInputs) {
+          parsedData.meta.dollarInputs = anyMeta['달러입력'];
+        }
+        const rateNum = parseFloat(String(parsedData.meta.exchangeRate || anyMeta['환율'] || '').replace(/[^0-9.]/g, ''));
+        if (!isNaN(rateNum) && rateNum > 0 && parsedData.settings) {
+          parsedData.settings.usdExchangeRate = rateNum;
+        }
+      }
+
       if (parsedData.monthlyRecords) {
         parsedData.monthlyRecords.forEach(month => {
+          const anyMonth = month as any;
+          if (anyMonth['메타'] && !month.meta) {
+            month.meta = anyMonth['메타'];
+          }
+          if (month.meta) {
+            const anyMeta = month.meta as any;
+            if (anyMeta['환율'] && !month.meta.exchangeRate) {
+              month.meta.exchangeRate = String(anyMeta['환율']);
+            }
+            if (anyMeta['달러입력'] && !month.meta.dollarInputs) {
+              month.meta.dollarInputs = anyMeta['달러입력'];
+            }
+          }
+
           month.records.forEach(record => {
             if (record.cashBalance === undefined) {
               const cashHolding = record.holdings?.find?.(h => h?.name?.trim?.() === '현금');

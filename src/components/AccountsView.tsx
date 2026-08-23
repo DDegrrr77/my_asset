@@ -19,6 +19,11 @@ export default function AccountsView() {
   const [newLimit, setNewLimit] = useState('');
 
   const [editState, setEditState] = useState<{id: string, name: string, type: AccountType, annualLimit: string} | null>(null);
+  const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
+
+  const toggleAccountExpand = (accountId: string) => {
+    setExpandedAccounts(prev => ({ ...prev, [accountId]: !prev[accountId] }));
+  };
 
   useEffect(() => {
     if (editState) {
@@ -177,54 +182,118 @@ export default function AccountsView() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.accounts.map((acc, idx) => (
-            <div key={acc.id} className="group relative border border-gray-100 rounded-2xl p-5 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-50 transition-all">
-              {editState?.id === acc.id ? (
-                <div className="space-y-4">
-                  <input value={editState.name} onChange={e => setEditState({...editState, name: e.target.value})} className="w-full p-2.5 border border-blue-100 rounded-xl text-xs font-bold focus:outline-none" placeholder="계좌 이름" />
-                  <div className="grid grid-cols-2 gap-2">
-                    <select value={editState.type} onChange={e => setEditState({...editState, type: e.target.value as AccountType})} className="p-2.5 border border-blue-100 rounded-xl text-[10px] font-bold bg-white outline-none">
-                      <option value="General">일반</option>
-                      <option value="ISA">ISA</option>
-                      <option value="Pension">연금저축</option>
-                      <option value="IRP">IRP</option>
-                    </select>
-                    {editState.type !== 'General' && (
-                      <input value={editState.annualLimit} onChange={e => setEditState({...editState, annualLimit: newIntFilter(e.target.value)})} className="p-2.5 border border-blue-100 rounded-xl text-[10px] font-bold outline-none" placeholder="한도" />
-                    )}
+          {data.accounts.map((acc, idx) => {
+            const accRec = latestRecord ? latestRecord.records.find(r => r.accountId === acc.id) : null;
+            const holdings = accRec?.holdings || [];
+            const cash = accRec?.cashBalance || 0;
+            const stockValuation = holdings.reduce((sum, h) => sum + (h.price * h.quantity), 0);
+            const totalValuation = accRec?.valuation || (stockValuation + cash);
+            const isExpanded = !!expandedAccounts[acc.id]; // default collapsed (false)
+
+            return (
+              <div key={acc.id} className="border border-gray-100 rounded-2xl p-5 hover:border-blue-100 hover:shadow-xl hover:shadow-blue-50 transition-all bg-white flex flex-col justify-between">
+                {editState?.id === acc.id ? (
+                  <div className="space-y-4">
+                    <input value={editState.name} onChange={e => setEditState({...editState, name: e.target.value})} className="w-full p-2.5 border border-blue-100 rounded-xl text-xs font-bold focus:outline-none" placeholder="계좌 이름" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <select value={editState.type} onChange={e => setEditState({...editState, type: e.target.value as AccountType})} className="p-2.5 border border-blue-100 rounded-xl text-[10px] font-bold bg-white outline-none">
+                        <option value="General">일반</option>
+                        <option value="ISA">ISA</option>
+                        <option value="Pension">연금저축</option>
+                        <option value="IRP">IRP</option>
+                      </select>
+                      {editState.type !== 'General' && (
+                        <input value={editState.annualLimit} onChange={e => setEditState({...editState, annualLimit: newIntFilter(e.target.value)})} className="p-2.5 border border-blue-100 rounded-xl text-[10px] font-bold outline-none" placeholder="한도" />
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => { updateAccount({...acc, name: editState.name, type: editState.type, annualLimit: editState.annualLimit ? parseInt(editState.annualLimit.replace(/[^0-9]/g, ''), 10) : undefined}); setEditState(null); }} className="flex-1 py-2 bg-gray-900 text-white text-[10px] rounded-lg uppercase font-black">저장</button>
+                      <button onClick={() => setEditState(null)} className="flex-1 py-2 bg-gray-50 border border-gray-100 text-gray-400 text-[10px] rounded-lg uppercase font-black">취소</button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => { updateAccount({...acc, name: editState.name, type: editState.type, annualLimit: editState.annualLimit ? parseInt(editState.annualLimit.replace(/[^0-9]/g, ''), 10) : undefined}); setEditState(null); }} className="flex-1 py-2 bg-gray-900 text-white text-[10px] rounded-lg uppercase font-black">저장</button>
-                    <button onClick={() => setEditState(null)} className="flex-1 py-2 bg-gray-50 border border-gray-100 text-gray-400 text-[10px] rounded-lg uppercase font-black">취소</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="flex justify-between items-center mb-6">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gray-900 text-white rounded-xl flex items-center justify-center font-black text-sm shadow-lg group-hover:bg-blue-600 transition-colors shrink-0">{acc.name.charAt(0)}</div>
-                      <div className="flex flex-col min-w-0">
-                         <div className="flex items-center gap-2 mb-0.5">
-                           <h4 className="font-black text-gray-900 text-sm truncate">{acc.name}</h4>
-                           <span className="text-[8px] bg-gray-50 border border-gray-100 text-gray-400 px-1.5 py-0.5 rounded font-black tracking-widest uppercase shrink-0">{acc.type}</span>
-                         </div>
-                         <p className="text-[9px] text-gray-400 font-medium truncate">기록하기 탭에서 월별 관리</p>
+                ) : (
+                  <>
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-gray-900 text-white rounded-xl flex items-center justify-center font-black text-sm shadow-lg hover:bg-blue-600 transition-colors shrink-0">{acc.name.charAt(0)}</div>
+                        <div className="flex flex-col min-w-0">
+                           <div className="flex items-center gap-2 mb-0.5">
+                             <h4 className="font-black text-gray-900 text-sm truncate">{acc.name}</h4>
+                             <span className="text-[8px] bg-gray-50 border border-gray-100 text-gray-400 px-1.5 py-0.5 rounded font-black tracking-widest uppercase shrink-0">{acc.type}</span>
+                           </div>
+                           <p className="text-[10px] font-mono font-bold text-blue-600">{formatCurrency(totalValuation)}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex gap-1">
+                          <button disabled={idx === 0} onClick={() => moveAccount(acc.id, -1)} className="p-1 text-gray-300 hover:text-blue-600 disabled:hidden transition-colors" title="위로 이동">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M15 19l-7-7 7-7" /></svg>
+                          </button>
+                          <button disabled={idx === data.accounts.length - 1} onClick={() => moveAccount(acc.id, 1)} className="p-1 text-gray-300 hover:text-blue-600 disabled:hidden transition-colors" title="아래로 이동">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 5l7 7-7 7" /></svg>
+                          </button>
+                        </div>
+                        <button onClick={() => setEditState({id: acc.id, name: acc.name, type: acc.type, annualLimit: acc.annualLimit?.toString() || ''})} className="text-[9px] font-black text-gray-400 hover:text-blue-600 uppercase tracking-widest px-1.5 py-1 rounded bg-gray-50 hover:bg-blue-50 transition-colors">수정</button>
+                        <button onClick={() => window.confirm('이 계좌를 삭제하시겠습니까?') && deleteAccount(acc.id)} className="text-[9px] font-black text-gray-400 hover:text-red-500 uppercase tracking-widest px-1.5 py-1 rounded bg-gray-50 hover:bg-red-50 transition-colors">삭제</button>
                       </div>
                     </div>
-                    <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button disabled={idx === 0} onClick={() => moveAccount(acc.id, -1)} className="p-1.5 text-gray-300 hover:text-blue-600 disabled:hidden transition-colors"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M15 19l-7-7 7-7" /></svg></button>
-                      <button disabled={idx === data.accounts.length - 1} onClick={() => moveAccount(acc.id, 1)} className="p-1.5 text-gray-300 hover:text-blue-600 disabled:hidden transition-colors"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 5l7 7-7 7" /></svg></button>
+
+                    {/* Accordion Toggle for Detailed Holdings */}
+                    <div className="border-t border-gray-100 pt-3">
+                      <button 
+                        onClick={() => toggleAccountExpand(acc.id)}
+                        className="w-full flex items-center justify-between py-1 px-2 text-[10px] font-black text-gray-500 hover:text-gray-900 bg-gray-50/60 hover:bg-gray-100/70 rounded-xl transition-all select-none"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span>세부 종목</span>
+                          <span className="text-[9px] px-1.5 py-0.2 bg-white text-gray-600 rounded-md border border-gray-200 font-mono font-bold">{holdings.length}개</span>
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] text-gray-400 font-medium">{isExpanded ? '접기' : '펼치기'}</span>
+                          <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="mt-3 space-y-2 max-h-60 overflow-y-auto pr-1">
+                          {cash > 0 && (
+                            <div className="flex justify-between items-center p-2 rounded-lg bg-gray-50 text-[10px]">
+                              <span className="font-bold text-gray-600">예수금 (현금)</span>
+                              <span className="font-mono font-black text-gray-900">{formatCurrency(cash)}</span>
+                            </div>
+                          )}
+                          {holdings.length === 0 && cash === 0 ? (
+                            <p className="text-center text-[10px] text-gray-400 py-3">등록된 세부 종목이 없습니다.</p>
+                          ) : (
+                            holdings.map(h => {
+                              const hVal = (h.price || 0) * (h.quantity || 0);
+                              return (
+                                <div key={h.id || h.name} className="flex justify-between items-center p-2 rounded-lg bg-gray-50/70 border border-gray-100 text-[10px]">
+                                  <div className="flex flex-col">
+                                    <span className="font-black text-gray-900">{h.name}</span>
+                                    <span className="text-[9px] text-gray-400 font-mono">{h.quantity}주 @ {formatCurrency(h.price)}</span>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="font-mono font-black text-blue-600">{formatCurrency(hVal)}</div>
+                                    {h.dividend > 0 && (
+                                      <div className="text-[8px] text-green-600 font-bold">배당 {formatCurrency(h.dividend)}</div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  
-                  <div className="absolute top-4 right-4 flex gap-2">
-                    <button onClick={() => setEditState({id: acc.id, name: acc.name, type: acc.type, annualLimit: acc.annualLimit?.toString() || ''})} className="text-[9px] font-black text-gray-300 hover:text-blue-600 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all">수정</button>
-                    <button onClick={() => window.confirm('이 계좌를 삭제하시겠습니까?') && deleteAccount(acc.id)} className="text-[9px] font-black text-gray-300 hover:text-red-500 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all">삭제</button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
+                  </>
+                )}
+              </div>
+            );
+          })}
           {data.accounts.length === 0 && (
             <div className="col-span-1 md:col-span-2 text-center py-20 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
               <div className="text-[10px] text-gray-400 font-black uppercase tracking-widest">등록된 계좌가 없습니다</div>

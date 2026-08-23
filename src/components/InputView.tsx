@@ -21,9 +21,51 @@ export default function InputView() {
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   const getLatestStockMap = useCallback(() => {
-    const latestRate = data.settings?.usdExchangeRate || 
-      (data.monthlyRecords.length > 0 ? parseFloat(data.monthlyRecords[data.monthlyRecords.length - 1]?.meta?.exchangeRate || '') : null) ||
-      1400;
+    const anyData = data as any;
+    const rootMeta = anyData.meta || anyData['메타'] || anyData.settings?.meta || anyData.settings?.['메타'];
+
+    // Scan sorted records to find latest metadata
+    const sortedRecords = [...data.monthlyRecords].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+    const latestRec = sortedRecords.length > 0 ? sortedRecords[sortedRecords.length - 1] : null;
+    const latestRecAny = latestRec as any;
+    const latestRecMeta = latestRecAny?.meta || latestRecAny?.['메타'];
+
+    // 1. Determine latest rate priority: rootMeta > latestRecMeta > settings
+    const rawRate = rootMeta?.exchangeRate || rootMeta?.['환율'] ||
+                    latestRecMeta?.exchangeRate || latestRecMeta?.['환율'] ||
+                    data.settings?.usdExchangeRate ||
+                    anyData.settings?.['환율'];
+
+    const latestRate = (rawRate ? parseFloat(String(rawRate).replace(/[^0-9.]/g, '')) : null) || 1400;
+
+    // 2. Aggregate all dollar inputs from meta / 메타 across history, with latest overriding
+    const combinedDollarInputs: Record<string, string> = {};
+
+    sortedRecords.forEach(r => {
+      const rAny = r as any;
+      const m = rAny.meta || rAny['메타'];
+      if (m) {
+        const dInputs = m.dollarInputs || m['dollarInputs'] || m.달러입력 || m['달러입력'] || m.usdInputs;
+        if (dInputs && typeof dInputs === 'object') {
+          Object.entries(dInputs).forEach(([k, v]) => {
+            if (v !== undefined && v !== null && String(v).trim() !== '') {
+              combinedDollarInputs[k.trim()] = String(v);
+            }
+          });
+        }
+      }
+    });
+
+    if (rootMeta) {
+      const dInputs = rootMeta.dollarInputs || rootMeta['dollarInputs'] || rootMeta.달러입력 || rootMeta['달러입력'] || rootMeta.usdInputs;
+      if (dInputs && typeof dInputs === 'object') {
+        Object.entries(dInputs).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && String(v).trim() !== '') {
+            combinedDollarInputs[k.trim()] = String(v);
+          }
+        });
+      }
+    }
 
     const stockMap: Record<string, {
       priceKRW: number;
@@ -31,7 +73,7 @@ export default function InputView() {
       isUSD: boolean;
     }> = {};
 
-    // 1. Scan data.accounts
+    // 3. Scan data.accounts
     data.accounts.forEach(acc => {
       (acc.holdings || []).forEach((h: any) => {
         const name = (h.name || '').trim();
@@ -39,35 +81,35 @@ export default function InputView() {
         
         const isUSMarket = ['US', 'USA', 'OVERSEAS', 'NASDAQ', 'NYSE'].includes(String(h.market || '').toUpperCase());
         const hasUSD = typeof h.currentPriceUSD === 'number' && h.currentPriceUSD > 0;
+        const dollarValFromMeta = combinedDollarInputs[name] ? parseFloat(combinedDollarInputs[name]) : undefined;
+        const usdPrice = dollarValFromMeta !== undefined ? dollarValFromMeta : (hasUSD ? h.currentPriceUSD : (h.priceUSD || h.usdPrice || (h['달러가격'] ? parseFloat(h['달러가격']) : undefined)));
+        const isUSD = isUSMarket || hasUSD || usdPrice !== undefined || !!combinedDollarInputs[name];
+
         const krwPrice = Number(h.currentPrice || h.price || 0);
 
         stockMap[name] = {
-          priceKRW: krwPrice > 0 ? krwPrice : (hasUSD ? Math.round(h.currentPriceUSD * latestRate) : 0),
-          priceUSD: hasUSD ? h.currentPriceUSD : (isUSMarket && krwPrice > 0 ? Number((krwPrice / latestRate).toFixed(2)) : undefined),
-          isUSD: isUSMarket || hasUSD
+          priceKRW: (usdPrice && usdPrice > 0) ? Math.round(usdPrice * latestRate) : (krwPrice > 0 ? krwPrice : 0),
+          priceUSD: usdPrice,
+          isUSD
         };
       });
     });
 
-    // 2. Scan latest monthly records if not in accounts
-    const sortedRecords = [...data.monthlyRecords].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
-    const latestRec = sortedRecords.length > 0 ? sortedRecords[sortedRecords.length - 1] : null;
+    // 4. Scan latest monthly records
     if (latestRec) {
-      const recRate = parseFloat(latestRec.meta?.exchangeRate || '') || latestRate;
-      const dollarInputs = latestRec.meta?.dollarInputs || {};
-
       latestRec.records.forEach(accRec => {
         (accRec.holdings || []).forEach(h => {
           const name = (h.name || '').trim();
           if (!name) return;
           
           const existing = stockMap[name];
-          const isDollar = !!dollarInputs[name] || (existing?.isUSD ?? false);
-          const usdVal = dollarInputs[name] ? parseFloat(dollarInputs[name]) : existing?.priceUSD;
+          const dollarValFromMeta = combinedDollarInputs[name] ? parseFloat(combinedDollarInputs[name]) : undefined;
+          const usdVal = dollarValFromMeta !== undefined ? dollarValFromMeta : existing?.priceUSD;
+          const isDollar = !!combinedDollarInputs[name] || (existing?.isUSD ?? false);
 
-          if (!existing || existing.priceKRW === 0) {
+          if (!existing || existing.priceKRW === 0 || (usdVal && usdVal > 0)) {
             stockMap[name] = {
-              priceKRW: h.price > 0 ? h.price : (usdVal ? Math.round(usdVal * recRate) : 0),
+              priceKRW: (usdVal && usdVal > 0) ? Math.round(usdVal * latestRate) : (h.price > 0 ? h.price : 0),
               priceUSD: usdVal,
               isUSD: isDollar
             };
@@ -76,7 +118,32 @@ export default function InputView() {
       });
     }
 
-    return { stockMap, latestRate };
+    // 5. Add any remaining dollarInputs
+    Object.entries(combinedDollarInputs).forEach(([name, valStr]) => {
+      const val = parseFloat(valStr);
+      if (!isNaN(val) && val > 0) {
+        if (!stockMap[name]) {
+          stockMap[name] = {
+            priceKRW: Math.round(val * latestRate),
+            priceUSD: val,
+            isUSD: true
+          };
+        } else {
+          stockMap[name].priceUSD = val;
+          stockMap[name].isUSD = true;
+          if (stockMap[name].priceKRW === 0) {
+            stockMap[name].priceKRW = Math.round(val * latestRate);
+          }
+        }
+      }
+    });
+
+    return { 
+      stockMap, 
+      latestRate, 
+      combinedDollarInputs, 
+      rawRateStr: rawRate ? String(rawRate) : String(latestRate) 
+    };
   }, [data.accounts, data.monthlyRecords, data.settings]);
 
   const [exchangeRate, setExchangeRate] = useState<string>(() => {
@@ -214,20 +281,37 @@ export default function InputView() {
   };
 
   const openBulkPriceModal = () => {
-    const { stockMap, latestRate } = getLatestStockMap();
+    const { stockMap, latestRate, combinedDollarInputs } = getLatestStockMap();
     const isCurrentOrFuture = yearMonth >= format(new Date(), 'yyyy-MM');
-    const activeRate = isCurrentOrFuture ? latestRate : (parseFloat(exchangeRate) || latestRate);
+    const existingAny = data.monthlyRecords.find(r => r.yearMonth === yearMonth) as any;
+    const existingMeta = existingAny?.meta || existingAny?.['메타'];
+    const existingRate = existingMeta?.exchangeRate || existingMeta?.['환율'];
+    const existingDollarInputs = existingMeta?.dollarInputs || existingMeta?.['dollarInputs'] || existingMeta?.달러입력 || existingMeta?.['달러입력'] || existingMeta?.usdInputs;
+
+    const activeRate = (existingRate && !isCurrentOrFuture)
+      ? parseFloat(String(existingRate).replace(/[^0-9.]/g, '')) || latestRate
+      : (data.settings?.usdExchangeRate || latestRate);
     
     setExchangeRate(String(activeRate));
     
-    const initialDollarInputs: Record<string, string> = { ...dollarInputs };
+    const initialDollarInputs: Record<string, string> = { ...dollarInputs, ...combinedDollarInputs };
+    if (existingDollarInputs && typeof existingDollarInputs === 'object') {
+      Object.entries(existingDollarInputs).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          initialDollarInputs[k.trim()] = String(v);
+        }
+      });
+    }
+
     const initialDollarFlags: Record<string, boolean> = { ...dollarFlags };
     
     uniqueHoldingNames.forEach(name => {
       const stockInfo = stockMap[name];
-      if (stockInfo?.isUSD || initialDollarFlags[name]) {
+      if (stockInfo?.isUSD || initialDollarFlags[name] || initialDollarInputs[name]) {
         initialDollarFlags[name] = true;
-        if (stockInfo?.priceUSD) {
+        if (initialDollarInputs[name]) {
+          // Keep existing or meta dollar input
+        } else if (stockInfo?.priceUSD) {
           initialDollarInputs[name] = String(stockInfo.priceUSD);
         } else {
           const currentKRW = Object.values(records).flatMap((acc: FormRecord) => acc.holdings).find(h => h.name.trim() === name)?.price || stockInfo?.priceKRW || 0;
@@ -395,7 +479,7 @@ export default function InputView() {
   useEffect(() => {
     const existing = data.monthlyRecords.find(r => r.yearMonth === yearMonth);
     const initialRecords: Record<string, FormRecord> = {};
-    const { stockMap, latestRate } = getLatestStockMap();
+    const { stockMap, latestRate, combinedDollarInputs } = getLatestStockMap();
     const isCurrentOrFuture = yearMonth >= format(new Date(), 'yyyy-MM');
     
     // Auto-fill from previous month
@@ -484,21 +568,45 @@ export default function InputView() {
 
     setRecords(initialRecords);
 
-    if (existing && existing.meta && existing.meta.exchangeRate && !isCurrentOrFuture) {
-      setExchangeRate(existing.meta.exchangeRate);
-      setDollarInputs(existing.meta.dollarInputs || {});
+    const existingAny = existing as any;
+    const existingMeta = existingAny?.meta || existingAny?.['메타'];
+    const existingRate = existingMeta?.exchangeRate || existingMeta?.['환율'];
+    const existingDollarInputs = existingMeta?.dollarInputs || existingMeta?.['dollarInputs'] || existingMeta?.달러입력 || existingMeta?.['달러입력'] || existingMeta?.usdInputs;
+
+    if (existingRate && !isCurrentOrFuture) {
+      setExchangeRate(String(existingRate));
     } else {
       const activeRate = data.settings?.usdExchangeRate || latestRate;
       setExchangeRate(String(activeRate));
-      
-      const newDollarInputs: Record<string, string> = {};
-      Object.keys(stockMap).forEach(name => {
-        if (stockMap[name]?.priceUSD) {
-          newDollarInputs[name] = String(stockMap[name].priceUSD);
+    }
+
+    const mergedDollarInputs: Record<string, string> = { ...combinedDollarInputs };
+    if (existingDollarInputs && typeof existingDollarInputs === 'object') {
+      Object.entries(existingDollarInputs).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          mergedDollarInputs[k.trim()] = String(v);
         }
       });
-      setDollarInputs(existing?.meta?.dollarInputs || newDollarInputs);
     }
+
+    Object.keys(stockMap).forEach(name => {
+      if (stockMap[name]?.priceUSD && !mergedDollarInputs[name]) {
+        mergedDollarInputs[name] = String(stockMap[name].priceUSD);
+      }
+    });
+
+    setDollarInputs(mergedDollarInputs);
+
+    setDollarFlags(prev => {
+      const next = { ...prev };
+      Object.keys(mergedDollarInputs).forEach(k => {
+        if (mergedDollarInputs[k]) next[k] = true;
+      });
+      Object.keys(stockMap).forEach(k => {
+        if (stockMap[k]?.isUSD) next[k] = true;
+      });
+      return next;
+    });
   }, [yearMonth, data.accounts, data.monthlyRecords, data.settings, getLatestStockMap]);
 
   const handleRecordChange = (accountId: string, field: 'monthlyDeposit' | 'principal' | 'cashBalance', value: string) => {
@@ -756,7 +864,7 @@ export default function InputView() {
               holdings: []
             };
 
-            const isExpanded = expandedAccounts[acc.id] !== false; // default expanded
+            const isExpanded = !!expandedAccounts[acc.id]; // default collapsed (false)
 
             const accountStockValuation = (formRec.holdings || []).reduce((sum, h) => sum + (h.price * h.quantity), 0);
             const totalAccountValuation = accountStockValuation + (Number(formRec.cashBalance) || 0);
