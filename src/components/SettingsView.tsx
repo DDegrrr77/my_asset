@@ -8,7 +8,7 @@ import { Account, Holding, RecordDetail, MonthlyRecord, AppData } from '../types
 import { APP_VERSION } from '../constants';
 
 export default function SettingsView() {
-  const { data, updateSettings, exportData, importData, setAppData } = useData();
+  const { data, storageSource, updateSettings, exportData, importData, setAppData } = useData();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
@@ -16,33 +16,6 @@ export default function SettingsView() {
   const [goalInput, setGoalInput] = useState(() => 
     new Intl.NumberFormat('ko-KR').format(data.settings.retirementGoal)
   );
-
-  const [userNameInput, setUserNameInput] = useState(data.settings.userName || '');
-  const [currentPin, setCurrentPin] = useState('');
-  const [newPin, setNewPin] = useState('');
-  const [pinError, setPinError] = useState('');
-
-  const handleProfileSave = () => {
-    let finalPin = data.settings.pin;
-    
-    if (newPin) {
-      if (currentPin !== data.settings.pin) {
-        setPinError('현재 PIN 번호가 틀립니다. 저장할 수 없습니다.');
-        return;
-      }
-      if (newPin.length < 4) {
-        setPinError('새 PIN 번호는 4자리 이상이어야 합니다.');
-        return;
-      }
-      finalPin = newPin;
-    }
-
-    updateSettings({ ...data.settings, userName: userNameInput.trim(), pin: finalPin });
-    setPinError('');
-    setCurrentPin('');
-    setNewPin('');
-    alert('사용자 설정이 저장되었습니다.');
-  };
 
   const handleGoalSave = () => {
     const val = parseInt(goalInput.replace(/[^0-9]/g, ''), 10);
@@ -361,47 +334,26 @@ export default function SettingsView() {
   return (
     <div className="space-y-6">
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col">
-        <h3 className="text-sm font-bold text-gray-700 uppercase tracking-widest mb-6">사용자 설정</h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-[11px] font-medium text-gray-500 mb-2 uppercase tracking-wider">사용자 이름</label>
-            <input 
-              type="text" 
-              value={userNameInput}
-              onChange={(e) => setUserNameInput(e.target.value)}
-              className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 text-gray-900 text-sm font-medium"
-              placeholder="표시될 이름 입력"
-            />
+        <h3 className="text-sm font-bold text-gray-700 uppercase tracking-widest mb-4">데이터 저장 장치 상태</h3>
+        <div className="p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between border gap-3 transition-all duration-300 bg-gray-50/50 border-gray-100">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1.5">현재 데이터 동기화 소스</span>
+            <span className="text-sm font-bold text-gray-800">
+              {storageSource === 'Gist' ? 'GitHub Gist (클라우드)' : 'LocalStorage (로컬 기기)'}
+            </span>
           </div>
-          <div>
-            <label className="block text-[11px] font-medium text-gray-500 mb-2 uppercase tracking-wider">새 PIN 번호 변경 (선택)</label>
-            <div className="space-y-2">
-              <input 
-                type="password" 
-                inputMode="numeric"
-                value={currentPin}
-                onChange={(e) => setCurrentPin(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 tracking-widest font-mono text-sm"
-                placeholder="현재 PIN 입력"
-              />
-              <input 
-                type="password" 
-                inputMode="numeric"
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 tracking-widest font-mono text-sm"
-                placeholder="새 PIN 4자리 이상"
-              />
-            </div>
-            {pinError && <p className="text-xs text-red-500 mt-2 font-medium">{pinError}</p>}
+          <div className="flex items-center gap-1.5 self-start sm:self-center">
+            <div className={`w-2 h-2 rounded-full ${storageSource === 'Gist' ? 'bg-green-500 animate-pulse' : 'bg-orange-400'}`} />
+            <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg ${storageSource === 'Gist' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-orange-50 text-orange-700 border border-orange-100'}`}>
+              {storageSource === 'Gist' ? 'Online Sync' : 'Local Offline'}
+            </span>
           </div>
-          <button 
-            onClick={handleProfileSave}
-            className="w-full bg-gray-900 text-white p-4 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-colors"
-          >
-            설정 저장
-          </button>
         </div>
+        <p className="text-[11px] text-gray-400 mt-3.5 leading-relaxed">
+          {storageSource === 'Gist' 
+            ? 'GitHub Gist API와의 실시간 무중단 동기화가 정상 작동 중입니다. 모든 입력은 디바운싱 필터를 거쳐 클라우드에 자동 백그라운드 업로드되어 Hermes Python 에이전트와 완벽히 동기화됩니다.'
+            : '토큰 정보가 설정되지 않았거나 오프라인 상태입니다. 로컬 브라우저 내의 안전한 격리된 저장소(LocalStorage)를 사용하여 자산 정보를 독립적으로 기록하고 보존합니다.'}
+        </p>
       </div>
 
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col">

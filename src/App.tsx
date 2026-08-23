@@ -15,7 +15,7 @@ import AuthView from './components/AuthView';
 import HelpGuide from './components/HelpGuide';
 
 function AppContent() {
-  const { data, updateSettings } = useData();
+  const { data, storageSource, updateSettings } = useData();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showHeader, setShowHeader] = useState(true);
   const [showNav, setShowNav] = useState(true);
@@ -105,7 +105,17 @@ function AppContent() {
         <div className="flex items-center gap-3 md:gap-4">
           <img src="/icon.svg?v=6" alt="Snow Ball Logo" className="w-10 h-10 md:w-12 md:h-12 rounded-2xl shadow-sm object-cover" />
           <div className="flex flex-col justify-center">
-            <p className="text-[9px] md:text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-0.5">Asset Manager</p>
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <p className="text-[9px] md:text-[10px] font-bold text-gray-400 uppercase tracking-wider">Asset Manager</p>
+              <span className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md border scale-90 origin-left flex items-center gap-1 ${
+                storageSource === 'Gist' 
+                  ? 'bg-green-50/70 text-green-700 border-green-200/50' 
+                  : 'bg-orange-50/70 text-orange-700 border-orange-200/50'
+              }`}>
+                <span className={`w-1 h-1 rounded-full ${storageSource === 'Gist' ? 'bg-green-500 animate-pulse' : 'bg-orange-400'}`} />
+                {storageSource === 'Gist' ? 'Gist Cloud' : 'Local Only'}
+              </span>
+            </div>
             <h1 className="text-xl md:text-2xl font-black text-gray-900 tracking-tighter flex items-center">
               {data.settings.userName ? `${data.settings.userName}님의 자산` : 'Snow Ball'}
             </h1>

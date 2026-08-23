@@ -95,6 +95,7 @@ const defaultData: AppData = {
 
 interface DataContextType {
   data: AppData;
+  storageSource: 'Gist' | 'LocalStorage';
   saveMonthlyRecord: (record: MonthlyRecord) => void;
   deleteMonthlyRecord: (id: string) => void;
   updateSettings: (settings: UserSettings) => void;
@@ -113,6 +114,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [data, setData] = useState<AppData>(defaultData);
   const [loaded, setLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [storageSource, setStorageSource] = useState<'Gist' | 'LocalStorage'>('LocalStorage');
 
   // Helper migration function
   const runMigration = (parsedData: AppData) => {
@@ -202,8 +204,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!response.ok) {
         throw new Error(`Gist save failed with status: ${response.status}`);
       }
+      setStorageSource('Gist');
       console.log('Successfully saved to GitHub Gist cloud storage!');
     } catch (error) {
+      setStorageSource('LocalStorage');
       console.error('Failed to save to Gist, data remains cached in LocalStorage:', error);
     } finally {
       setSyncing(false);
@@ -227,9 +231,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         runMigration(loadedData);
         setData(loadedData);
+        setStorageSource('Gist');
         // Sync local storage as fallback
         localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedData));
       } else {
+        setStorageSource('LocalStorage');
         // Fallback to local storage
         try {
           const stored = localStorage.getItem(STORAGE_KEY);
@@ -384,7 +390,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   if (!loaded) return null; // Or skeleton
 
   return (
-    <DataContext.Provider value={{ data, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData }}>
+    <DataContext.Provider value={{ data, storageSource, saveMonthlyRecord, deleteMonthlyRecord, updateSettings, addAccount, deleteAccount, updateAccount, moveAccount, importData, exportData, setAppData }}>
       {children}
       {syncing && (
         <div className="fixed inset-0 bg-gray-950/20 backdrop-blur-sm flex flex-col items-center justify-center z-[9999]">
