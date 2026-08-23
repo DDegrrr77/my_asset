@@ -5,10 +5,10 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # ==========================================
-# 1. 설정 정보 (환경 변수 또는 직접 입력)
+# 1. 설정 정보
 # ==========================================
-GITHUB_TOKEN = os.environ.get("WT_GITHUB_TOKEN", "ghp_여기에_토큰_입력")
-GIST_ID = os.environ.get("WT_GIST_ID", "여기에_GIST_ID_입력")
+GITHUB_TOKEN = os.environ.get("WT_GITHUB_TOKEN", "")
+GIST_ID = os.environ.get("WT_GIST_ID", "")
 GIST_FILENAME = "wealthtrack-data.json"
 
 HEADERS = {
@@ -19,23 +19,24 @@ HEADERS = {
 }
 
 # ==========================================
-# 2. 시세 크롤러 함수
+# 2. 시세 및 환율 수집기
 # ==========================================
 def get_krx_stock_price(ticker_code: str) -> int:
-    """네이버 증권에서 국내 주식 현재가(종가) 크롤링"""
-    url = f"https://finance.naver.com/item/main.naver?code={ticker_code}"
+    """네이버 증권 국내 주식 종가 크롤링"""
+    clean_code = str(ticker_code).strip().zfill(6)
+    url = f"https://finance.naver.com/item/main.naver?code={clean_code}"
     res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if res.status_code == 200:
         soup = BeautifulSoup(res.text, "html.parser")
-        today_div = soup.find("fieldset", class_="blind")
+        today_div = soup.find("p", class_="no_today")
         if today_div:
-            # 현재가 영역 파싱
-            now_price = soup.find("p", class_="no_today").find("span", class_="blind").text
-            return int(now_price.replace(",", ""))
+            price_span = today_div.find("span", class_="blind")
+            if price_span:
+                return int(price_span.text.replace(",", ""))
     return 0
 
 def get_usd_exchange_rate() -> float:
-    """네이버 금융에서 원/달러 환율 크롤링"""
+    """네이버 금융 원/달러 환율 크롤링"""
     url = "https://finance.naver.com/marketindex/"
     res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if res.status_code == 200:
@@ -43,13 +44,13 @@ def get_usd_exchange_rate() -> float:
         rate_span = soup.select_one("div.head_info > span.value")
         if rate_span:
             return float(rate_span.text.replace(",", ""))
-    return 1380.0  # 기본 폴백 환율
+    return 1380.0
 
 def get_us_stock_price(ticker_symbol: str) -> float:
-    """미국 주식 시세 크롤링 (Yahoo Finance API 경량 엔드포인트 활용)"""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_symbol}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
+    """미국 주식 시세 조회 (Yahoo Finance API)"""
+    clean_ticker = str(ticker_symbol).strip().upper()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_ticker}"
+    res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     if res.status_code == 200:
         data = res.json()
         try:
@@ -59,25 +60,31 @@ def get_us_stock_price(ticker_symbol: str) -> float:
     return 0.0
 
 # ==========================================
-# 3. Gist 읽기 및 쓰기 함수
+# 3. Gist 통신
 # ==========================================
-def fetch_gist_data() -> dict:
-    """GitHub Gist에서 최신 자산 JSON 데이터 로드"""
+def fetch_gist_data() -> tuple[dict, str]:
     url = f"https://api.github.com/gists/{GIST_ID}"
     res = requests.get(url, headers=HEADERS)
     if res.status_code == 200:
         files = res.json().get("files", {})
+        # GIST_FILENAME 우선 확인, 없으면 첫 번째 json 파일 선택
         target_file = files.get(GIST_FILENAME)
+        actual_name = GIST_FILENAME
+        if not target_file:
+            for fname, fobj in files.items():
+                if fname.endswith(".json"):
+                    target_file = fobj
+                    actual_name = fname
+                    break
         if target_file:
-            return json.loads(target_file["content"])
+            return json.loads(target_file["content"]), actual_name
     raise Exception(f"Gist 데이터 로드 실패: {res.status_code} {res.text}")
 
-def update_gist_data(new_data: dict):
-    """업데이트된 JSON 데이터를 Gist에 저장"""
+def update_gist_data(new_data: dict, filename: str):
     url = f"https://api.github.com/gists/{GIST_ID}"
     payload = {
         "files": {
-            GIST_FILENAME: {
+            filename: {
                 "content": json.dumps(new_data, ensure_ascii=False, indent=2)
             }
         }
@@ -89,65 +96,78 @@ def update_gist_data(new_data: dict):
         raise Exception(f"Gist 업데이트 실패: {res.status_code} {res.text}")
 
 # ==========================================
-# 4. 에이전트 주 실행 루프
+# 4. 재평가 실행 로직
 # ==========================================
 def run_hermes_update():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 헤르메스 에이전트 자산 평가 업데이트 시작...")
     
-    # 1. 데이터 로드
-    app_data = fetch_gist_data()
+    app_data, filename = fetch_gist_data()
+    print(f"📂 대상 파일명: {filename}")
+    print(f"🔍 JSON 최상위 키 목록: {list(app_data.keys())}")
+
     usd_rate = get_usd_exchange_rate()
     print(f"💵 현재 원/달러 기준 환율: {usd_rate:,.2f}원")
 
-    # 2. 가장 최근 월(Month) 데이터 탐색 및 보유 주식 시세 갱신
-    # (JSON 구조에 따라 월별/계좌별 holdings를 순회)
-    records = app_data.get("monthlyRecords", [])
+    # 월별 데이터 키 자동 탐색 (monthlyRecords, records, history 등)
+    records = None
+    for key in ["monthlyRecords", "records", "history", "data"]:
+        if key in app_data and isinstance(app_data[key], list):
+            records = app_data[key]
+            print(f"📌 데이터 리스트 키 매칭 성공: '{key}' (총 {len(records)}개 기록)")
+            break
+
     if not records:
-        print("⚠️ 월별 기록이 존재하지 않습니다.")
+        print("⚠️ 자산 기록 배열을 찾지 못했습니다. JSON 구조를 확인하세요.")
         return
 
     latest_record = records[-1]
-    print(f"📊 대상 월별 기록: {latest_record.get('month', '최신')}")
+    print(f"📊 대상 월별 기록: {latest_record.get('month') or latest_record.get('date') or '최신'}")
 
     total_net_worth = 0
+    accounts = latest_record.get("accounts") or latest_record.get("categories") or []
 
-    for account in latest_record.get("accounts", []):
+    for account in accounts:
         account_total = 0
-        
-        # 주식 및 ETF 항목 단가 최신화
-        for holding in account.get("holdings", []):
-            code = holding.get("code") or holding.get("ticker")
-            market = holding.get("market", "KRX")  # KRX 또는 US
-            quantity = holding.get("quantity", 0)
+        holdings = account.get("holdings") or account.get("items") or []
 
-            if code:
-                if market == "US":
-                    current_price_usd = get_us_stock_price(code)
-                    if current_price_usd > 0:
-                        holding["currentPriceUSD"] = current_price_usd
-                        holding["currentPrice"] = int(current_price_usd * usd_rate)
-                        holding["totalValue"] = int(quantity * current_price_usd * usd_rate)
-                        print(f"  - [해외] {holding.get('name')}({code}): ${current_price_usd:,.2f} -> {holding['totalValue']:,}원")
+        for item in holdings:
+            code = item.get("code") or item.get("ticker") or item.get("symbol")
+            market = item.get("market", "KRX").upper()
+            qty = float(item.get("quantity") or item.get("shares") or item.get("qty") or 0)
+
+            if code and qty > 0:
+                if market in ["US", "USA", "OVERSEAS", "NASDAQ", "NYSE"]:
+                    price_usd = get_us_stock_price(code)
+                    if price_usd > 0:
+                        item["currentPriceUSD"] = price_usd
+                        item["currentPrice"] = int(price_usd * usd_rate)
+                        item["totalValue"] = int(qty * price_usd * usd_rate)
+                        item["valuation"] = item["totalValue"]
+                        print(f"  - [해외] {item.get('name', code)}({code}): ${price_usd:,.2f} x {qty} -> {item['totalValue']:,}원")
                 else:
-                    current_price_krw = get_krx_stock_price(code)
-                    if current_price_krw > 0:
-                        holding["currentPrice"] = current_price_krw
-                        holding["totalValue"] = int(quantity * current_price_krw)
-                        print(f"  - [국내] {holding.get('name')}({code}): {current_price_krw:,}원 -> {holding['totalValue']:,}원")
+                    price_krw = get_krx_stock_price(code)
+                    if price_krw > 0:
+                        item["currentPrice"] = price_krw
+                        item["totalValue"] = int(qty * price_krw)
+                        item["valuation"] = item["totalValue"]
+                        print(f"  - [국내] {item.get('name', code)}({code}): {price_krw:,}원 x {qty} -> {item['totalValue']:,}원")
             
-            account_total += holding.get("totalValue", 0)
+            account_total += int(item.get("totalValue") or item.get("valuation") or item.get("value") or 0)
 
-        # 현금 및 기타 자산 합산
-        account_total += account.get("cash", 0)
+        # 현금 및 계좌 총합
+        cash = int(account.get("cash") or 0)
+        account_total += cash
         account["totalValuation"] = account_total
+        account["balance"] = account_total
         total_net_worth += account_total
 
     latest_record["totalNetWorth"] = total_net_worth
+    latest_record["netWorth"] = total_net_worth
     latest_record["lastUpdated"] = datetime.now().isoformat()
     print(f"💰 재계산된 총 순자산: {total_net_worth:,}원")
 
-    # 3. Gist에 저장
-    update_gist_data(app_data)
+    # 갱신 데이터 저장
+    update_gist_data(app_data, filename)
 
 if __name__ == "__main__":
     run_hermes_update()
