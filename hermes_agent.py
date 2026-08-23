@@ -158,9 +158,17 @@ def run_hermes_update():
         latest_record["totalNetWorth"] = total_net_worth
         latest_record["netWorth"] = total_net_worth
         latest_record["lastUpdated"] = datetime.now().isoformat()
-        print(f"📊 최신 월별 히스토리({latest_record.get('month', '최신')}) 순자산 갱신 완료")
+        if "meta" not in latest_record or not isinstance(latest_record["meta"], dict):
+            latest_record["meta"] = {}
+        latest_record["meta"]["exchangeRate"] = str(round(usd_rate, 2))
+        print(f"📊 최신 월별 히스토리({latest_record.get('yearMonth') or latest_record.get('month', '최신')}) 순자산 및 환율({usd_rate:.2f}원) 갱신 완료")
 
-    # 3. Gist 저장
+    # 3. 전역 설정(settings)에 최신 환율 기록
+    if "settings" not in app_data or not isinstance(app_data["settings"], dict):
+        app_data["settings"] = {}
+    app_data["settings"]["usdExchangeRate"] = round(usd_rate, 2)
+
+    # 4. Gist 저장
     update_gist_data(app_data, filename)
 
 if __name__ == "__main__":

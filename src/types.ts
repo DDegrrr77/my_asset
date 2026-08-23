@@ -40,6 +40,7 @@ export interface UserSettings {
   retirementGoal: number;
   userName?: string;
   pin?: string;
+  usdExchangeRate?: number;
 }
 
 export interface AppData {

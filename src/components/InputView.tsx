@@ -12,11 +12,19 @@ type FormRecord = RecordDetail & {
 };
 
 export default function InputView() {
-  const { data, saveMonthlyRecord } = useData();
+  const { data, saveMonthlyRecord, updateSettings } = useData();
   const [yearMonth, setYearMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [isBulkPriceModalOpen, setIsBulkPriceModalOpen] = useState(false);
-  const [exchangeRate, setExchangeRate] = useState<string>(() => localStorage.getItem('snowball_exchange_rate') || '1400');
+  const [exchangeRate, setExchangeRate] = useState<string>(() => {
+    const latestRec = data.monthlyRecords.length > 0 ? data.monthlyRecords[data.monthlyRecords.length - 1] : null;
+    return (
+      (data.settings.usdExchangeRate ? String(data.settings.usdExchangeRate) : null) ||
+      latestRec?.meta?.exchangeRate ||
+      localStorage.getItem('snowball_exchange_rate') ||
+      '1400'
+    );
+  });
   const [dollarFlags, setDollarFlags] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('snowball_dollar_flags');
@@ -176,7 +184,14 @@ export default function InputView() {
   const handleRateChange = (val: string) => {
     setExchangeRate(val);
     localStorage.setItem('snowball_exchange_rate', val);
-    const rate = parseFloat(val) || 1;
+    const numRate = parseFloat(val);
+    if (!isNaN(numRate) && numRate > 0) {
+      updateSettings({
+        ...data.settings,
+        usdExchangeRate: numRate
+      });
+    }
+    const rate = numRate || 1;
     
     setRecords(prev => {
       const next = { ...prev };
@@ -295,13 +310,21 @@ export default function InputView() {
       }
     });
     setRecords(initialRecords);
-    if (existing && existing.meta) {
-      setExchangeRate(existing.meta.exchangeRate || localStorage.getItem('snowball_exchange_rate') || '1400');
+    if (existing && existing.meta && existing.meta.exchangeRate) {
+      setExchangeRate(existing.meta.exchangeRate);
       setDollarInputs(existing.meta.dollarInputs || {});
     } else {
+      const latestRec = data.monthlyRecords.length > 0 ? data.monthlyRecords[data.monthlyRecords.length - 1] : null;
+      const rateVal = (
+        (data.settings.usdExchangeRate ? String(data.settings.usdExchangeRate) : null) ||
+        latestRec?.meta?.exchangeRate ||
+        localStorage.getItem('snowball_exchange_rate') ||
+        '1400'
+      );
+      setExchangeRate(rateVal);
       setDollarInputs({});
     }
-  }, [yearMonth, data.accounts, data.monthlyRecords]);
+  }, [yearMonth, data.accounts, data.monthlyRecords, data.settings]);
 
   const handleRecordChange = (accountId: string, field: 'monthlyDeposit' | 'principal' | 'cashBalance', value: string) => {
     let sanitized = value.replace(/[^0-9-]/g, '');
